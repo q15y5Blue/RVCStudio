@@ -1,0 +1,20 @@
+VB-CABLE 普通版集成说明
+
+VB-CABLE 由 VB-Audio / Vincent Burel 提供。
+产品来源及捐赠入口：https://vb-audio.com/Cable/
+VB-CABLE 是 donationware（捐赠软件），欢迎在认为有用时捐赠或购买许可支持作者。
+软件保留 VB-CABLE 名称，系统端点仍为 CABLE Input / CABLE Output。
+
+本安装程序原样内置官方 VBCABLE_Driver_Pack45.zip，通过官方安装器部署驱动。
+驱动 ZIP SHA-256：b950e39f01af1d04ea623c8f6d8eb9b6ea5c477c637295fabf20631c85116bfb
+未修改官方驱动、INF、CAT 或安装器。没有捆绑 A+B / C+D 等附加产品。
+
+依据厂商公开许可页面中“VB-CABLE Distribution with other product”的普通版条件：
+https://vb-audio.com/Services/licensing.htm
+核对日期：2026-09-29。
+该页面允许在终端用户能识别产品、能够捐赠或购买许可的条件下随应用分发并嵌入安装包。
+本程序在安装向导、软件页面和本文件中提供产品来源与捐赠说明。
+企业、机构及其他专业用途/分发须遵循厂商相应的许可条款。
+
+官方包内的完整使用许可见 VB-CABLE-EULA.txt，原始文件也保留在驱动 ZIP 中。
+许可页面的公开集成条件是本安装包采用的集成依据；未声称取得厂商定制 OEM 合同。

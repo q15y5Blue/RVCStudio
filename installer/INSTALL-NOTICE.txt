@@ -1,0 +1,19 @@
+RVC Studio 0.2.0 Beta — 统一在线安装版
+
+你只需要运行这一个安装程序。
+
+安装程序将自动下载、校验并配置变声引擎（约 4.93 GB），安装 VB-CABLE 虚拟麦克风驱动，
+然后安装中文桌面界面。你不需要单独下载、安装或打开 Applio / VB-CABLE。
+需要网络连接，建议预留 20 GB 磁盘空间；下载中断可以重新运行本安装程序续传。
+安装驱动时需要 Windows 管理员授权；首次安装驱动后可能需要重启。
+
+实时变声需要 NVIDIA 显卡和可用的显卡驱动。女声模型由你导入 .pth 与可选 .index。
+本版本为 Beta，具体模型音质与 RTX 3070 延迟还需要在目标电脑测试。
+
+VB-CABLE 由 VB-Audio / Vincent Burel 提供，保留原产品名称。
+VB-CABLE 是 donationware（捐赠软件），欢迎在认为有用时捐赠或购买许可支持作者。
+产品与捐赠入口：https://vb-audio.com/Cable/
+授权说明：https://vb-audio.com/Services/licensing.htm
+企业、机构使用或分发须遵循厂商相应的许可条件。
+
+卸载 RVC Studio 会保留个人模型、录音、引擎缓存和可能被其他程序共用的 VB-CABLE 驱动。

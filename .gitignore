@@ -1,0 +1,43 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ===== 虚拟环境 / 构建环境 =====
+.build-venv/
+.build-venv312/
+.venv/
+venv/
+
+# ===== 构建产物（冻结 EXE、安装包、PyInstaller 中间文件）=====
+build/
+dist/
+
+# ===== 离线 payload 工作区（含数 GB 引擎分片、payload.7z、暂存与日志，本地生成）=====
+# 仅保留顶层可复用的校验脚本（*.py），忽略所有子目录与大文件。
+offline-build/*
+!offline-build/*.py
+
+# ===== 第三方/大体积资产（构建前自行获取，不入库）=====
+# 引擎 ApplioV3.6.5.zip 分片、RVC 女声模型权重(*.pth/*.index)、VB-CABLE 驱动包等。
+# 获取与放置方式见 README「源码与构建 / 离线资产」。
+vendor/
+
+# ===== 第三方工具链与测试二进制（默认不入库，仅保留顶层脚本）=====
+# 含 tools/InnoSetup 编译器、tools/*.exe 安装包、tools/audio-test 的 portaudio/wheel 等。
+tools/*
+!tools/*.py
+
+# ===== 日志 / 哈希 / 临时文件 =====
+*.log
+*.sha256
+
+# ===== 个人参考资料（仅本地保留）=====
+reference/
+
+# ===== 系统/编辑器杂项 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
