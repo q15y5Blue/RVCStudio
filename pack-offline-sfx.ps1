@@ -1,4 +1,11 @@
-﻿# 将“小型 Inno 内层安装程序 + 引擎分片”封装为单个 7z 自解压 exe（离线全量包）。
+﻿# [已弃用 / 仅在总体积 < 约 4GB 时才可能可用]
+# 本脚本用 7z.sfx 拼“单个自解压 exe”。实测当成品总体积约 4.7GB（引擎分片 4.93GB）时，
+# Windows 加载器直接拒绝运行：CreateProcess 返回 Win32 错误码 193（ERROR_BAD_EXE_FORMAT），
+# 界面提示“此应用无法在你的电脑上运行”。这与 Inno Setup 单 Setup.exe 约 4.2GB 上限同源。
+# 因此本项目的离线全量包改用 pack-offline-zip.ps1（单个 ZIP，解压后双击 RVCStudio-Setup.exe）。
+# 仅当未来内容总量能压到 4GB 以内时，单文件 SFX 才可行，否则请勿使用本脚本。
+#
+# 将“小型 Inno 内层安装程序 + 引擎分片”封装为单个 7z 自解压 exe（离线全量包）。
 # 双击后：自解压到临时目录 -> 启动 Inno 向导 -> 从同目录分片本地合并引擎并部署模型/驱动。
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot

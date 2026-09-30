@@ -1,12 +1,25 @@
 # 离线全量安装包构建说明（0.3.0）
 
-目标产物是**单个 EXE**：`dist/RVCStudio-Setup-0.3.0-offline.exe`（约 4.7 GiB）。
-双击后先自解压到临时目录，再启动中文 Inno 安装向导；安装全程**不联网**，
-内置变声引擎、两把自然普通话女声模型与 VB-CABLE 虚拟麦克风。
+目标产物是**单个压缩包**：`dist/RVCStudio-0.3.0-offline.zip`（约 4.7 GiB，ZIP64）。
+用户把它“全部解压”得到一个文件夹，双击其中的 `RVCStudio-Setup.exe` 即启动中文 Inno 向导；
+安装全程**不联网**，内置变声引擎、两把自然普通话女声模型与 VB-CABLE 虚拟麦克风。
 
-> 为什么是两层：Inno Setup 单个 Setup.exe 有约 4.2 GB 的硬性上限，而引擎就有 4.93 GB。
-> 因此先用 Inno 产出一个约 127 MB 的“内层安装程序”，再由 7-Zip 自解压模块把
-> “内层安装程序 + 引擎分片”封装成单个 EXE。
+解压后的文件夹布局（这些文件必须放在一起）：
+
+```
+RVCStudio-0.3.0-offline/
+├─ RVCStudio-Setup.exe     # 内层 Inno 安装程序（约 127 MB，含助手/模型/驱动）
+├─ engine.bin.001 … 004    # Applio 3.6.5 引擎分片（合计 4,929,106,166 字节）
+└─ README.txt              # 中文安装说明
+```
+
+> **为什么不是“单个 exe”**：Windows 无法运行总体积超过约 4 GB 的单个可执行文件。
+> Inno Setup 单个 Setup.exe 有约 4.2 GB 上限；改用 7-Zip 自解压模块（7z.sfx）拼出的
+> 4.7 GB 单 exe 同样在 `CreateProcess` 阶段被拒绝，Win32 错误码 193
+> （`ERROR_BAD_EXE_FORMAT`，界面提示“此应用无法在你的电脑上运行”）。
+> 因此先用 Inno 产出约 127 MB 的“内层安装程序”，再与引擎分片一起打成**单个 ZIP**
+> （`pack-offline-zip.ps1`）。除“解压一次”外，安装体验与单文件完全一致。
+> 旧的 `pack-offline-sfx.ps1` 已弃用，仅在内容总量能压到 4 GB 以内时才可行。
 
 ## 一、构建环境
 
@@ -18,9 +31,8 @@
   ```
   （在被托管/注入了 `PYTHONPATH` 的终端里构建前，请先
   `Remove-Item Env:PYTHONPATH,PYTHONHOME`，否则 PyInstaller 隔离子进程可能报错。）
-- 7-Zip（用于外层自解压），默认路径 `C:\Program Files\7-Zip\7z.exe`。
-- 7-Zip 自解压模块 `7z.sfx`（GUI 安装器模块）。`pack-offline-sfx.ps1` 顶部的
-  `$sfxModule` 指向本机的 `7z.sfx`，请按实际位置修改。
+- 7-Zip（用于打 ZIP 与校验），默认路径 `C:\Program Files\7-Zip\7z.exe`。
+  不再需要 7z 自解压模块 `7z.sfx`（>4GB 单 exe 无法运行，已弃用该方案）。
 - Inno Setup 6.7.3 编译器放在 `tools\InnoSetup\ISCC.exe`（第三方工具，不入库）。
 
 ## 二、不入库的离线资产（需自行准备）
@@ -71,16 +83,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-offline.ps1
 
 流程：校验驱动包签名 → 单元测试 → PyInstaller 冻结 `RVCSetupHelper.exe`
 （内置引擎清单、驱动、两把女声模型）与 `RVCStudio.exe` → ISCC 编译内层
-`RVCStudio-Setup-0.3.0-offline-inner.exe` → 调用 `pack-offline-sfx.ps1`
-封装出最终单文件并生成 `.sha256`。
+`RVCStudio-Setup-0.3.0-offline-inner.exe` → 调用 `pack-offline-zip.ps1`
+组装分发文件夹并打成单个 `RVCStudio-0.3.0-offline.zip`（ZIP64），自动 `7z t`
+校验并生成 `.sha256`。
 
 也可分步执行：先 `ISCC installer\offline.iss`，再
-`powershell -File .\pack-offline-sfx.ps1`。
+`powershell -File .\pack-offline-zip.ps1`。
+（`pack-offline-sfx.ps1` 为旧的单 exe 方案，成品超过 4GB 无法运行，已弃用。）
 
 ## 四、安装期行为与磁盘占用
 
-- 外层 SFX 解压到 `%TEMP%`（内层安装程序 + 4 个分片），随后启动内层安装程序；
-  内层从自身所在目录（`{src}`）读取分片，边合并边删除分片以降低峰值占用。
+- 用户解压 ZIP 后，`RVCStudio-Setup.exe` 与 4 个分片同处一个文件夹；安装程序从
+  自身所在目录（`{src}`）读取分片，边合并边删除分片以降低峰值占用。
 - 引擎安装到 `%LOCALAPPDATA%\RVCStudio\runtime\Applio-3.6.5`，模型安装到
   `%LOCALAPPDATA%\RVCStudio\models`，并在 `settings.json` 中默认选中主女声
   （仅当用户尚未选择或原文件缺失时，重装不覆盖用户选择）。

@@ -4,11 +4,16 @@
 
 ## 安装
 
-推荐使用**离线全量安装包** `dist/RVCStudio-Setup-0.3.0-offline.exe`（单文件，约 4.7 GiB，属构建产物、不入库）：
-双击后先自解压再启动中文安装向导，**全程不联网**，已内置约 4.93 GB 官方 Applio 3.6.5 引擎、
-两把自然普通话女声模型（主 `ChineseFemale` 为标准 RVC v2/200ep，备 `ChineseFemale_HQ` 为 Ov2/350ep），
-以及 VB-CABLE 虚拟麦克风；无需另外安装或打开 Applio、VB-CABLE，也无需再下载模型。
+推荐使用**离线全量安装包** `dist/RVCStudio-0.3.0-offline.zip`（单个压缩包，约 4.7 GiB，属构建产物、不入库）：
+右键“全部解压”到同一文件夹，再双击里面的 `RVCStudio-Setup.exe` 启动中文安装向导，**全程不联网**，
+已内置约 4.93 GB 官方 Applio 3.6.5 引擎、两把自然普通话女声模型（主 `ChineseFemale` 为标准 RVC v2/200ep，
+备 `ChineseFemale_HQ` 为 Ov2/350ep）以及 VB-CABLE 虚拟麦克风；无需另外安装或打开 Applio、VB-CABLE，也无需再下载模型。
+注意 `RVCStudio-Setup.exe` 必须和 `engine.bin.001～004` 放在同一文件夹，不要单独复制出来。
 建议预留约 25 GB 可用空间，安装驱动时需要一次管理员授权，首次安装驱动后按提示重启。
+
+> 为什么是压缩包而不是单个 exe：Windows 无法运行总体积超过约 4 GB 的单个自解压可执行文件
+> （会提示“此应用无法在你的电脑上运行”，加载器错误 193），引擎本身已达 4.93 GB，
+> 因此离线版以“一个 ZIP + 解压后的文件夹”分发，仅多一次解压，安装过程完全相同。
 
 旧的在线统一安装程序 `RVCStudio-Setup-0.2.0-online.exe` 仍保留：运行时才下载引擎、不内置模型。
 
@@ -68,14 +73,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 .\.build-venv\Scripts\python.exe .\tests\gui_check.py
 ```
 
-离线全量包构建（产出单个约 4.7 GiB 的 EXE，详见 [BUILD-OFFLINE.md](BUILD-OFFLINE.md)）：
+离线全量包构建（产出单个约 4.7 GiB 的 ZIP，详见 [BUILD-OFFLINE.md](BUILD-OFFLINE.md)）：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build-offline.ps1
 ```
 
 构建会先验证驱动包和签名、运行单元测试，再冻结主程序与安装助手；离线版随后编译内层 Inno 安装程序、
-封装外层 7z 自解压单文件并生成 SHA-256。`tests/installer_fixture.py` 只用于单独编译的安装流程测试，不会打包到交付版本。
+组装“setup + 引擎分片”文件夹并打成单个 ZIP（ZIP64）、校验完整性并生成 SHA-256。
+`tests/installer_fixture.py` 只用于单独编译的安装流程测试，不会打包到交付版本。
 本地已有官方完整 ZIP 时，在线安装程序可通过 `/ENGINEARCHIVE="完整路径"` 使用，仍强制校验官方哈希。
 
 应用数据默认位于 `%LOCALAPPDATA%\RVCStudio`，包含引擎、模型、录音、缓存和日志。

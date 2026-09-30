@@ -39,7 +39,7 @@ Source: "..\build\test-helper\RVCSetupHelper.exe"; Flags: dontcopy
 Source: "..\build\app\RVCSetupHelper.exe"; Flags: dontcopy
 #endif
 ; 注意：约 4.93 GB 的引擎分片不内嵌进本 Setup.exe（Inno 单文件上限约 4.2 GB）。
-; 它们由外层单文件自解压包释放到本 Setup.exe 同目录（{src}），安装时从该目录本地合并。
+; 它们与本 Setup.exe 同处一个离线文件夹（{src}，由离线压缩包完整解压得到），安装时从该目录本地合并。
 Source: "..\build\app\RVCStudio.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\build\app\RVCSetupHelper.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\studio\USER_GUIDE.txt"; DestDir: "{app}"; Flags: ignoreversion
@@ -136,7 +136,7 @@ begin
     if not EngineReady then begin
       DeleteFile(ResultPath);
       if not FileExists(AddBackslash(ChunkPath) + 'engine.bin.001') then begin
-        Result := '未在安装程序同目录找到内置引擎分片（engine.bin.001）。' + #13#10 + '请运行完整的离线安装包（单个 exe），不要单独运行解包出来的内层安装程序。';
+        Result := '未在安装程序同目录找到内置引擎分片（engine.bin.001）。' + #13#10 + '请把离线压缩包完整解压到同一个文件夹，使本 Setup.exe 与 engine.bin.001～004 在一起后再运行，不要把 Setup.exe 单独复制出来。';
         Exit;
       end;
       Params := 'engine --data-root "' + DataPath + '" --result "' + ResultPath + '" --cancel-file "' + CancelPath + '" --engine-chunk-dir "' + ChunkPath + '"';

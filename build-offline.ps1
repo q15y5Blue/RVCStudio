@@ -40,9 +40,10 @@ try {
     # 先编译“小型内层 Inno 安装程序”（不含引擎分片，约 127MB）
     & $compilerPath installer/offline.iss
     if ($LASTEXITCODE -ne 0) { throw '内层离线安装程序构建失败' }
-    # 再把“内层安装程序 + 引擎分片”封装成单个 7z 自解压 exe（最终离线全量包，约 4.7GB）
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $projectRoot 'pack-offline-sfx.ps1')
-    if ($LASTEXITCODE -ne 0) { throw '单文件离线全量包封装失败' }
+    # 再把“内层安装程序 + 引擎分片”封装为单个离线 ZIP（约 4.7GB）。
+    # 注意：总体积 >4GB 无法做成“可运行的单个 exe”（Windows 加载器报错 193），故改用 ZIP。
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $projectRoot 'pack-offline-zip.ps1')
+    if ($LASTEXITCODE -ne 0) { throw '离线 ZIP 全量包封装失败' }
 } finally {
     Pop-Location
 }
