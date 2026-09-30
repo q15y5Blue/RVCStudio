@@ -178,6 +178,9 @@ def realtime(config, stop):
             result = np.asarray(result, dtype=np.float32)
             if not np.isfinite(result).all():
                 raise RuntimeError("模型输出了非有限音频值，已停止输出")
+            gain = float(config.output_gain)
+            if gain != 1.0:
+                result = result * gain  # 输出增益（>1 放大，过高会被削顶而爆音）
             result = np.clip(result, -1, 1)
             main_output.put(result)
             if mon:
@@ -226,6 +229,13 @@ def offline(config, source, destination):
     result = Path(destination)
     if not result.is_file() or sf.info(result).frames == 0:
         raise RuntimeError("转换没有生成有效音频，请查看运行日志")
+    gain = float(config.output_gain)
+    if gain != 1.0:
+        import numpy as np
+        info = sf.info(result)
+        audio, sr = sf.read(result, dtype="float32")
+        audio = np.clip(audio * gain, -1, 1)
+        sf.write(result, audio, sr, subtype=info.subtype)
     emit("converted", path=str(result))
 
 

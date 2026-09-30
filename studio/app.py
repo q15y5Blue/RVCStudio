@@ -198,6 +198,12 @@ class Studio(tk.Tk):
             self.device_boxes[key] = box
         self.monitor_var = tk.BooleanVar(value=self.config.monitor)
         ttk.Checkbutton(tab, text="启用额外耳机监听", variable=self.monitor_var).pack(anchor="w", pady=10)
+        grow = ttk.Frame(tab)
+        grow.pack(fill="x", pady=(0, 4))
+        ttk.Label(grow, text="输出增益（倍）", style="Sub.TLabel").pack(side="left")
+        ttk.Entry(grow, width=8, textvariable=self.variable("output_gain")).pack(side="left", padx=8)
+        self.label(tab, "输出声音偏小就调大：1.0 为原始，1.5≈+3.5dB，2.0≈+6dB，3.0≈+9.5dB；过高会削顶爆音。改后需停止并重新开始变声。",
+                   "Sub.TLabel", pady=(0, 6))
         row = ttk.Frame(tab)
         row.pack(fill="x", pady=6)
         ttk.Button(row, text="刷新设备", command=self.probe_runtime).pack(side="left")
@@ -255,7 +261,7 @@ class Studio(tk.Tk):
             value = var.get().strip()
             if name in ("pitch", "chunk_ms", "crossfade_ms", "extra_ms"):
                 value = int(value)
-            elif name in ("index_rate", "protect", "volume_envelope"):
+            elif name in ("index_rate", "protect", "volume_envelope", "output_gain"):
                 value = float(value)
             values[name] = value
         values["monitor"] = self.monitor_var.get()
@@ -272,7 +278,7 @@ class Studio(tk.Tk):
 
     def defaults(self):
         defaults = Settings()
-        for key in ("pitch", "index_rate", "protect", "volume_envelope", "chunk_ms", "crossfade_ms", "extra_ms", "f0_method"):
+        for key in ("pitch", "index_rate", "protect", "volume_envelope", "output_gain", "chunk_ms", "crossfade_ms", "extra_ms", "f0_method"):
             self.variable(key).set(str(getattr(defaults, key)))
         self.save_settings()
 

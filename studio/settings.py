@@ -25,6 +25,7 @@ class Settings:
     index_rate: float = 0.50
     protect: float = 0.35
     volume_envelope: float = 0.45
+    output_gain: float = 1.0
     chunk_ms: int = 160
     crossfade_ms: int = 60
     extra_ms: int = 250
@@ -36,7 +37,7 @@ class Settings:
 
     def validate(self, require_model=False):
         limits = {"pitch": (-24, 24), "index_rate": (0, 1), "protect": (0, .5),
-                  "volume_envelope": (0, 1), "chunk_ms": (80, 400),
+                  "volume_envelope": (0, 1), "output_gain": (0, 8), "chunk_ms": (80, 400),
                   "crossfade_ms": (10, 120), "extra_ms": (50, 1000)}
         for name, (low, high) in limits.items():
             value = getattr(self, name)
