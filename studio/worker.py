@@ -240,7 +240,19 @@ def main():
     engine = Path(args.runtime).resolve()
     os.chdir(engine)
     sys.path.insert(0, str(engine))
-    os.environ["PATH"] = str(engine) + os.pathsep + os.environ.get("PATH", "")
+    # Applio ships a conda-style env whose OpenSSL/native DLLs live in env\Library\bin.
+    # Register them explicitly (and first on PATH) so the engine binds its own DLLs
+    # instead of any libssl/libcrypto sitting in the launcher's directory.
+    envdir = engine / "env"
+    dll_dirs = [envdir, envdir / "Library" / "bin", envdir / "Library" / "mingw-w64" / "bin",
+                envdir / "Library" / "usr" / "bin", envdir / "Scripts", engine]
+    dll_dirs = [p for p in dll_dirs if p.exists()]
+    os.environ["PATH"] = os.pathsep.join(str(p) for p in dll_dirs) + os.pathsep + os.environ.get("PATH", "")
+    for dll_dir in {str(p) for p in dll_dirs}:
+        try:
+            os.add_dll_directory(dll_dir)
+        except (OSError, AttributeError):
+            pass
     stop = threading.Event()
 
     def control():
@@ -251,11 +263,26 @@ def main():
         finally:
             stop.set()  # Parent closed or crashed: do not leave microphone open.
 
-    threading.Thread(target=control, daemon=True).start()
     if args.command == "probe":
+        # One-shot detection never needs stdin. Do not park a reader thread on an open
+        # pipe here: on Windows a thread blocked on a piped stdin while the main thread
+        # initializes PortAudio/torch native code can deadlock the loader/COM (the
+        # process then sits at ~0 CPU with no output and the UI stays on "正在检测环境").
         probe()
         return
     config = Settings.load(Path(args.config)).validate(require_model=True)
+    # Finish all heavy native initialization (torch/faiss model load and PortAudio
+    # enumeration) BEFORE the stdin reader thread starts, to avoid the same deadlock
+    # for long-running realtime/offline sessions.
+    validate_model(config)
+    import sounddevice as _sd  # noqa: F401
+    try:
+        _sd.query_devices()
+    except Exception:
+        pass
+    from rvc.realtime.core import VoiceChanger  # noqa: F401  heavy import, done pre-reader
+
+    threading.Thread(target=control, daemon=True).start()
     if args.command == "realtime":
         realtime(config, stop)
     else:

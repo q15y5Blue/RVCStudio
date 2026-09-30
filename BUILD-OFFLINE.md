@@ -105,3 +105,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-offline.ps1
 
 `installer/integrated.iss` + `build.ps1` 仍是旧的在线统一安装器（运行时从
 Hugging Face 下载引擎、不内置模型）。离线版为本次新增，不改动在线版逻辑。
+
+## 六、冻结程序调用引擎的两个 Windows 坑（改动时务必保留）
+
+现象：装好后界面一直停在“正在检测环境…”，`studio.log` 报
+`DLL load failed while importing _ssl: 找不到指定的程序`，或 worker 进程
+CPU≈0、零输出地卡死（点“开始实时变声”同样会卡）。两个根因都来自
+PyInstaller 冻结的 GUI/助手去拉起 Applio conda 环境的 `env\python.exe`：
+
+1. **脚本目录的 OpenSSL DLL 劫持（_ssl 报错）。** onefile 运行时会把自带的旧版
+   `libssl-3-x64.dll / libcrypto-3-x64.dll / python312.dll` 解包到临时 `_MEI…`，
+   而 Python 会把“启动脚本所在目录”加入 DLL 搜索。worker 脚本若从 `_MEI` 启动，
+   conda 环境的 `_ssl.pyd` 就绑到错误的 OpenSSL。
+   - 修复：`studio/app.py` 的 `App.worker_script()` 在冻结时把 `worker.py` 及其
+     同级模块（`settings/routing/audio_buffers`）复制到无 DLL 的数据目录
+     `%LOCALAPPDATA%\RVCStudio\worker` 再启动；`App.engine_env()` 把 conda 的
+     `env`、`env\Library\bin`、`env\Library\mingw-w64\bin`、`env\Library\usr\bin`、
+     `env\Scripts` 前置到 PATH，剔除 `_MEI`，并设置 `PYTHONHOME=<engine>\env`。
+   - `studio/worker.py` 启动时再用 `os.add_dll_directory()` 显式登记这些目录。
+   - `studio/setup_helper.py` 的依赖自检（`env\python.exe -c …`）使用同样的隔离环境。
+
+2. **常开 stdin 管道与原生库初始化死锁（零输出卡死）。** worker 原先在导入
+   sounddevice/torch 之前就启动一个守护线程阻塞读取 stdin 管道；Windows 上
+   “线程停在管道读 + 主线程做 PortAudio WASAPI 枚举 / torch 原生初始化”会在加载/
+   COM 阶段死锁。
+   - 修复：`probe` 为一次性命令，不启动 stdin 读取线程，GUI 对 probe 直接给
+     `stdin=DEVNULL`；`realtime/offline/recordtest` 先在主线程完成
+     `validate_model()`（torch/faiss）、PortAudio 预热（`sounddevice.query_devices()`）
+     和 `rvc.realtime.core.VoiceChanger` 导入，**之后**才启动 stdin 读取线程。
+
+验证基线：干净环境下 probe 约 7 秒返回 `"engine": true / "cuda": true / GPU 名`；
+realtime 约 8 秒发出 `started`，随后持续 `metrics`（RTX 3070 上 inference_ms≈40），
+发 `stop` 后干净退出。

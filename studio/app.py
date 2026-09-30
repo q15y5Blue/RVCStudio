@@ -26,6 +26,10 @@ from routing import cable_pair, restore_device_key
 HERE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 INSTALL_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1] / "build/app"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# These run under the pinned Applio Python. They must be launched from a directory
+# that contains no OpenSSL/Python DLLs (see App.worker_script); keep this list in sync
+# with what worker.py imports as plain sibling modules.
+WORKER_SUPPORT = ("worker.py", "settings.py", "routing.py", "audio_buffers.py")
 
 
 class Studio(tk.Tk):
@@ -431,6 +435,48 @@ class Studio(tk.Tk):
     def record_test(self):
         self.start_worker("recordtest")
 
+    def worker_script(self) -> Path:
+        """Return a worker.py that lives in a DLL-clean directory.
+
+        When frozen, the launch-script directory (and sys.path[0]) is the PyInstaller
+        extraction folder (_MEI…), which ships its own libssl/libcrypto/python312 DLLs.
+        The Applio conda Python then binds those mismatched OpenSSL DLLs and fails with
+        "DLL load failed while importing _ssl: 找不到指定的程序" (and can deadlock in the
+        loader). Copy the small worker scripts to a clean data folder and run that copy.
+        In source runs we use studio/ directly.
+        """
+        if not getattr(sys, "frozen", False):
+            return HERE / "worker.py"
+        stage = self.root_data / "worker"
+        stage.mkdir(parents=True, exist_ok=True)
+        for name in WORKER_SUPPORT:
+            shutil.copy2(HERE / name, stage / name)
+        return stage / "worker.py"
+
+    def engine_env(self, root: Path) -> dict:
+        """Environment for the Applio conda Python, isolated from the frozen GUI."""
+        env = os.environ.copy()
+        envdir = root / "env"
+        prepend = [envdir, envdir / "Library" / "bin", envdir / "Library" / "mingw-w64" / "bin",
+                   envdir / "Library" / "usr" / "bin", envdir / "Scripts", root]
+        existing = [str(p) for p in prepend if p.exists()]
+        here_norm = os.path.normcase(os.path.normpath(str(HERE)))
+        kept = []
+        for part in env.get("PATH", "").split(os.pathsep):
+            if not part:
+                continue
+            norm = os.path.normcase(os.path.normpath(part))
+            if norm == here_norm or norm.startswith(here_norm + os.sep) \
+                    or os.path.basename(norm).lower().startswith("_mei"):
+                continue  # never let the frozen GUI's bundled DLLs shadow Applio's
+            kept.append(part)
+        env["PATH"] = os.pathsep.join(existing + kept)
+        env["PYTHONHOME"] = str(envdir)
+        env.pop("PYTHONPATH", None)
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        return env
+
     def start_worker(self, command, source=None):
         if not self.ensure_idle():
             return
@@ -450,7 +496,7 @@ class Studio(tk.Tk):
             self.config = config
             session = self.root_data / "sessions" / (uuid.uuid4().hex + ".json")
             config.save(session)
-            args = [str(root / "env/python.exe"), "-u", str(HERE / "worker.py"), command,
+            args = [str(root / "env/python.exe"), "-u", str(self.worker_script()), command,
                     "--runtime", str(root), "--config", str(session)]
             if source:
                 args.extend(["--input", source])
@@ -459,16 +505,16 @@ class Studio(tk.Tk):
                 results.mkdir(exist_ok=True)
                 dest = results / (datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6] + ".wav")
                 args.extend(["--output", str(dest)])
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            env["PYTHONUTF8"] = "1"
-            env.pop("PYTHONHOME", None)
-            env.pop("PYTHONPATH", None)
+            env = self.engine_env(root)
             # A frozen GUI must not make its DLL search directory leak into Applio.
             if getattr(sys, "frozen", False):
                 ctypes.windll.kernel32.SetDllDirectoryW(None)
             try:
-                process = subprocess.Popen(args, cwd=root, env=env, stdin=subprocess.PIPE,
+                # probe is one-shot and never receives "stop"; a DEVNULL stdin gives the
+                # child immediate EOF so it cannot park a reader thread on an open pipe
+                # (which deadlocks native PortAudio/torch initialization on Windows).
+                stdin_handle = subprocess.DEVNULL if command == "probe" else subprocess.PIPE
+                process = subprocess.Popen(args, cwd=root, env=env, stdin=stdin_handle,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                           encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
             finally:
@@ -505,8 +551,9 @@ class Studio(tk.Tk):
         if process is None:
             return
         try:
-            process.stdin.write("stop\n")
-            process.stdin.flush()
+            if process.stdin is not None:
+                process.stdin.write("stop\n")
+                process.stdin.flush()
         except (OSError, ValueError):
             pass
         self.status.set("正在停止并释放音频设备…")

@@ -114,8 +114,25 @@ def prepare_engine(root: Path, cancel, archive=None, chunk_dir=None):
     runtime.check_cancel(cancel)
     print("RVC|DEPENDENCIES|0", flush=True)
     # Runs in the unprivileged installer process. Import the actual engine, not a stub.
+    # Isolate from this frozen helper: never let its _MEIPASS OpenSSL/Python DLLs shadow
+    # the Applio conda env (otherwise "DLL load failed while importing _ssl").
     env = os.environ.copy()
-    env.pop("PYTHONHOME", None)
+    envdir = target / "env"
+    prepend = [envdir, envdir / "Library" / "bin", envdir / "Library" / "mingw-w64" / "bin",
+               envdir / "Library" / "usr" / "bin", envdir / "Scripts", target]
+    existing = [str(p) for p in prepend if p.exists()]
+    here_norm = os.path.normcase(os.path.normpath(str(HERE)))
+    kept = []
+    for part in env.get("PATH", "").split(os.pathsep):
+        if not part:
+            continue
+        norm = os.path.normcase(os.path.normpath(part))
+        if norm == here_norm or norm.startswith(here_norm + os.sep) \
+                or os.path.basename(norm).lower().startswith("_mei"):
+            continue
+        kept.append(part)
+    env["PATH"] = os.pathsep.join(existing + kept)
+    env["PYTHONHOME"] = str(envdir)
     env.pop("PYTHONPATH", None)
     env["PYTHONIOENCODING"] = "utf-8"
     check = ("import os,sys;sys.path.insert(0,os.getcwd());"
