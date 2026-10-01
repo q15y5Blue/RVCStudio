@@ -87,7 +87,7 @@ class FormantTests(unittest.TestCase):
     def test_settings_compensate_f0_like_rvc(self):
         s = Settings(pitch=10, formant=1.5)
         self.assertEqual(s.inference_args()["f0_up_key"], 8.5)
-        self.assertEqual(Settings(pitch=10).inference_args()["f0_up_key"], 10)
+        self.assertEqual(Settings(pitch=10, formant=0.0).inference_args()["f0_up_key"], 10)
 
 
 if __name__ == "__main__":

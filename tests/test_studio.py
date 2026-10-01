@@ -23,7 +23,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(s.engine_args()["block_frame"], 7680)
         self.assertEqual(s.engine_args()["cross_fade_overlap_size"], .06)
         self.assertEqual(s.engine_args()["extra_convert_size"], .25)
-        self.assertEqual(s.inference_args()["f0_up_key"], 8)
+        # 出厂男变女预设：音调 10、共振峰 +0.5，实际 f0 移调 = 10 - 0.5 = 9.5
+        self.assertEqual(s.inference_args()["f0_up_key"], 9.5)
         self.assertFalse(s.inference_args()["f0_autotune"])
         self.assertFalse(s.engine_args()["vad_enabled"])
 
@@ -81,7 +82,7 @@ class RvcParameterTests(unittest.TestCase):
             path = Path(directory) / "settings.json"
             path.write_text(json.dumps({"pitch": 9, "chunk_ms": 165, "crossfade_ms": 60}), encoding="utf-8")
             s = Settings.load(path)
-            self.assertEqual((s.pitch, s.chunk_ms, s.formant, s.threshold_db), (9, 170, 0.0, -60))
+            self.assertEqual((s.pitch, s.chunk_ms, s.formant, s.threshold_db), (9, 170, 0.5, -60))
 
     def test_live_updates_only_touch_live_keys_and_reject_bad_values(self):
         live = LiveConfig(Settings())

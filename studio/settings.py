@@ -79,11 +79,12 @@ class Settings:
     runtime: str = ""
     model: str = ""
     index: str = ""
-    pitch: int = 8
-    formant: float = 0.0
-    index_rate: float = 0.50
-    protect: float = 0.35
-    volume_envelope: float = 0.45
+    # 出厂默认＝男变女推荐预设（依据 B 站高播放量实时变声教程实测，详见 README）
+    pitch: int = 10
+    formant: float = 0.5
+    index_rate: float = 0.0
+    protect: float = 0.33
+    volume_envelope: float = 0.55
     output_gain: float = 1.0
     chunk_ms: int = 160
     crossfade_ms: int = 60
