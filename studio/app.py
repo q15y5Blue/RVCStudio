@@ -19,7 +19,8 @@ import traceback
 import uuid
 import webbrowser
 
-from settings import APP_VERSION, F0_METHODS, LIVE_KEYS, PARAMS, PARAM_BY_NAME, TOGGLES, Settings, data_dir
+from settings import (APP_VERSION, BACKENDS, BEATRICE_SUFFIX, F0_METHODS, LIVE_KEYS, PARAMS,
+                      PARAM_BY_NAME, TOGGLES, Settings, data_dir)
 import runtime
 from routing import cable_pair, restore_device_key
 
@@ -29,7 +30,9 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # These run under the pinned Applio Python. They must be launched from a directory
 # that contains no OpenSSL/Python DLLs (see App.worker_script); keep this list in sync
 # with what worker.py imports as plain sibling modules.
-WORKER_SUPPORT = ("worker.py", "settings.py", "routing.py", "audio_buffers.py", "formant.py")
+WORKER_SUPPORT = ("worker.py", "settings.py", "routing.py", "audio_buffers.py", "formant.py",
+                  "beatrice_backend.py", "beatrice_trainer.py")
+INT_FIELDS = {"beatrice_speaker": "Beatrice 说话人编号"}
 CARD = "#172233"
 PARAM_GROUPS = (("core", "核心参数"), ("timbre", "音色"), ("perf", "推理性能"),
                 ("noise", "门限、降噪与输出"), ("advanced", "高级"))
@@ -117,7 +120,7 @@ class Studio(tk.Tk):
         body = ttk.Frame(self, padding=26)
         body.pack(fill="both", expand=True)
         self.label(body, "RVC Studio", "Title.TLabel")
-        self.label(body, "普通话男声 → 女声   /   导入你的 RVC v2 音色", "Sub.TLabel", pady=(3, 14))
+        self.label(body, "普通话男声 → 女声   /   RVC v2 与 Beatrice v2 双引擎，可随时切换对比", "Sub.TLabel", pady=(3, 14))
         self.label(body, "聊天软件的麦克风请选择 CABLE Output（VB-Audio Virtual Cable）。首次安装驱动后请重启电脑。", "Sub.TLabel", pady=(0, 16))
         book = ttk.Notebook(body)
         book.pack(fill="both", expand=True)
@@ -185,27 +188,65 @@ class Studio(tk.Tk):
         self.label(tab, "VB-CABLE 来自 VB-Audio，是 donationware，欢迎捐赠支持作者。", "Sub.TLabel", pady=4)
         ttk.Button(tab, text="VB-CABLE 官方网站 / 捐赠", command=lambda: webbrowser.open("https://vb-audio.com/Cable/")).pack(anchor="w")
 
+    def backend_selector(self, parent, style="TLabel"):
+        """Combobox showing BACKENDS labels, bound to the "backend" key variable."""
+        labels = {key: label for key, label in BACKENDS.items()}
+        keys = {label: key for key, label in labels.items()}
+        if not hasattr(self, "backend_display"):
+            self.backend_display = tk.StringVar(value=labels.get(self.variable("backend").get(), labels["rvc"]))
+            self.backend_display.trace_add("write", lambda *_: self.variable("backend").set(
+                keys.get(self.backend_display.get(), "rvc")))
+            def from_key(*_):
+                label = labels.get(self.variable("backend").get())
+                if label and self.backend_display.get() != label:
+                    self.backend_display.set(label)
+                self.param_changed("backend")
+            self.variable("backend").trace_add("write", from_key)
+        ttk.Combobox(parent, values=list(BACKENDS.values()), state="readonly", width=26,
+                     textvariable=self.backend_display).pack(side="left", padx=8)
+
+    def toggle_backend(self):
+        current = self.variable("backend").get()
+        self.variable("backend").set("rvc" if current == "beatrice" else "beatrice")
+        if not self.realtime_running():
+            self.save_settings()
+            self.status.set("当前引擎：" + BACKENDS[self.variable("backend").get()])
+
     def model_tab(self, tab):
+        row = ttk.Frame(tab)
+        row.pack(fill="x", pady=(0, 2))
+        ttk.Label(row, text="变声引擎", style="Section.TLabel").pack(side="left")
+        self.backend_selector(row)
+        ttk.Label(row, text="两种模型都设置后，可在「③ 实时变声」边说边 A/B 切换", style="Sub.TLabel").pack(side="left", padx=4)
         self.path_row(tab, "RVC v2 女声模型（.pth）", "model", "导入模型", self.import_model)
         self.path_row(tab, "配套特征索引（.index，可选；缺省时关闭检索）", "index", "导入索引", self.import_index)
         row = ttk.Frame(tab)
-        row.pack(fill="x", pady=(8, 12))
+        row.pack(fill="x", pady=(8, 2))
         ttk.Button(row, text="清空索引", command=self.clear_index).pack(side="left")
         ttk.Button(row, text="恢复普通话推荐参数", command=self.defaults).pack(side="left", padx=8)
-        brow = ttk.Frame(tab)
-        brow.pack(fill="x", pady=(0, 6))
-        ttk.Button(brow, text="使用内置主女声（标准 v2 / 200ep）",
+        ttk.Button(row, text="内置主女声（标准 v2 / 200ep）",
                    command=lambda: self.use_bundled_model("ChineseFemale", "ChineseFemale.pth", "ChineseFemale.index")).pack(side="left")
-        ttk.Button(brow, text="使用内置备选女声（HQ / Ov2 / 350ep）",
+        ttk.Button(row, text="内置备选女声（HQ / Ov2 / 350ep）",
                    command=lambda: self.use_bundled_model("ChineseFemale_HQ", "ChineseFemale_HQ.pth", "ChineseFemale_HQ.index")).pack(side="left", padx=8)
-        self.label(tab, "离线版已内置两把自然普通话女声（非卡通 / 非明星 / 非唱歌），点按钮即可一键切换并 A/B 对比。", "Sub.TLabel", pady=(0, 4))
+        self.label(tab, "离线版已内置两把自然普通话女声（非卡通 / 非明星 / 非唱歌），点按钮即可一键切换并 A/B 对比。", "Sub.TLabel", pady=(0, 2))
+        self.label(tab, "Beatrice v2 模型（beatrice-trainer 2.0.0-rc.0 的训练检查点 checkpoint_*.pt.gz；VST 专用的 paraphernalia 文件夹无法导入）",
+                   "Sub.TLabel", pady=(10, 5))
+        row = ttk.Frame(tab)
+        row.pack(fill="x")
+        ttk.Entry(row, textvariable=self.variable("beatrice_model"), state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ttk.Label(row, text="说话人编号", style="Sub.TLabel").pack(side="left")
+        ttk.Entry(row, width=4, textvariable=self.variable("beatrice_speaker")).pack(side="left", padx=(6, 8))
+        self.variable("beatrice_speaker").trace_add("write", lambda *_: self.param_changed("beatrice_speaker"))
+        ttk.Button(row, text="导入模型", command=self.import_beatrice).pack(side="right")
         self.label(tab, "音调、共振峰（性别因子）、检索、降噪、采样长度等全部参数在「② 变声参数」页调整；文件转换和录音试听同样使用这些参数。",
-                   "Sub.TLabel", pady=(15, 8))
+                   "Sub.TLabel", pady=(12, 8))
         row = ttk.Frame(tab)
         row.pack(fill="x")
         ttk.Button(row, text="保存参数", command=self.save_settings).pack(side="left")
         ttk.Button(row, text="选择音频文件并转换", command=self.convert_file, style="Accent.TButton").pack(side="left", padx=8)
-        ttk.Button(row, text="播放最近的转换结果", command=self.play_result).pack(side="left")
+        ttk.Button(row, text="两种引擎各转换（A/B）", command=lambda: self.convert_file(compare=True)).pack(side="left")
+        ttk.Button(row, text="播放最近的结果", command=self.play_result).pack(side="left", padx=8)
+        ttk.Button(row, text="打开结果文件夹", command=self.open_results).pack(side="left")
 
     def params_tab(self, tab):
         head = ttk.Frame(tab)
@@ -214,7 +255,9 @@ class Studio(tk.Tk):
         ttk.Button(head, text="保存参数", command=self.save_settings).pack(side="right")
         ttk.Button(head, text="恢复普通话推荐参数", command=self.defaults).pack(side="right", padx=8)
         self.label(tab, "● 实时变声运行中拖动即生效　○ 需停止后重新开始。名称与原版 RVC 实时 GUI 对应，引擎为内置 Applio 3.6.5。",
-                   "Sub.TLabel", pady=(6, 8))
+                   "Sub.TLabel", pady=(6, 2))
+        self.label(tab, "Beatrice 只用：音调、共振峰（按 0.5 取整，-2～+2）、采样长度、淡入淡出、额外推理时长、响应阈值、输入降噪、输出增益、"
+                   "独占 WASAPI；其余参数仅对 RVC 生效。", "Sub.TLabel", pady=(0, 8))
         holder = ttk.Frame(tab)
         holder.pack(fill="both", expand=True)
         canvas = tk.Canvas(holder, bg="#101622", highlightthickness=0)
@@ -348,7 +391,15 @@ class Studio(tk.Tk):
         ttk.Button(row, text="录音 15 秒并转换", command=self.record_test).pack(side="left", padx=8)
         ttk.Button(row, text="开始实时变声", command=self.start_realtime, style="Accent.TButton").pack(side="left")
         ttk.Button(row, text="停止", command=self.stop_worker).pack(side="left", padx=8)
-        self.metrics = tk.StringVar(value="算法延迟：—    单块推理耗时：—    丢块：—    输出欠载：—")
+        row = ttk.Frame(tab)
+        row.pack(fill="x", pady=6)
+        ttk.Label(row, text="引擎", style="Sub.TLabel").pack(side="left")
+        self.backend_selector(row)
+        ttk.Button(row, text="A/B 切换引擎", command=self.toggle_backend, style="Accent.TButton").pack(side="left")
+        ttk.Button(row, text="录音 15 秒，两种引擎各转换", command=lambda: self.record_test(compare=True)).pack(side="left", padx=8)
+        self.label(tab, "运行中切换：开始前两种引擎的模型都已设置时，会同时加载，点“A/B 切换引擎”即时切换（切换瞬间可能有一次轻微爆音）。",
+                   "Sub.TLabel", pady=(0, 4))
+        self.metrics = tk.StringVar(value="引擎：—    算法延迟：—    单块推理耗时：—    丢块：—    输出欠载：—")
         ttk.Label(tab, textvariable=self.metrics).pack(anchor="w", pady=(12, 6))
         self.meter = ttk.Progressbar(tab, maximum=100)
         self.meter.pack(fill="x")
@@ -408,6 +459,11 @@ class Studio(tk.Tk):
                         raise ValueError(f"{p.label} 必须为整数")
                     number = int(number)
                 value = number
+            elif name in INT_FIELDS:
+                try:
+                    value = int(value)
+                except ValueError:
+                    raise ValueError(f"{INT_FIELDS[name]} 需要填写整数") from None
             values[name] = value
         for name, var in self.bools.items():
             values[name] = bool(var.get())
@@ -469,6 +525,9 @@ class Studio(tk.Tk):
     def import_index(self):
         self.import_asset("index", ".index")
 
+    def import_beatrice(self):
+        self.import_asset("beatrice_model", BEATRICE_SUFFIX)
+
     def import_asset(self, key, extension):
         if not self.ensure_idle():
             return
@@ -476,7 +535,7 @@ class Studio(tk.Tk):
         if not source:
             return
         source = Path(source)
-        if source.suffix.lower() != extension or source.stat().st_size == 0:
+        if not source.name.lower().endswith(extension) or source.stat().st_size == 0:
             self.error("请选择非空的 " + extension + " 文件")
             return
         destination = self.root_data / "models" / uuid.uuid4().hex / source.name
@@ -580,15 +639,20 @@ class Studio(tk.Tk):
     def start_realtime(self):
         self.start_worker("realtime")
 
-    def convert_file(self):
+    def convert_file(self, compare=False):
         if not self.ensure_idle():
             return
         source = filedialog.askopenfilename(title="选择普通话测试音频", filetypes=[("音频", "*.wav *.flac *.mp3 *.m4a *.ogg"), ("所有文件", "*.*")])
         if source:
-            self.start_worker("offline", source)
+            self.start_worker("offline", source, compare=compare)
 
-    def record_test(self):
-        self.start_worker("recordtest")
+    def record_test(self, compare=False):
+        self.start_worker("recordtest", compare=compare)
+
+    def open_results(self):
+        results = self.root_data / "recordings"
+        results.mkdir(exist_ok=True)
+        os.startfile(results)
 
     def worker_script(self) -> Path:
         """Return a worker.py that lives in a DLL-clean directory.
@@ -632,11 +696,17 @@ class Studio(tk.Tk):
         env["PYTHONUTF8"] = "1"
         return env
 
-    def start_worker(self, command, source=None):
+    def start_worker(self, command, source=None, compare=False):
         if not self.ensure_idle():
             return
         try:
             config = self.collect(model=command != "probe")
+            if compare:
+                for backend in BACKENDS:
+                    try:
+                        config.check_model(backend)
+                    except ValueError as exc:
+                        raise ValueError(f"A/B 对比需要两种引擎的模型都已设置。{BACKENDS[backend]}：{exc}") from None
             root = Path(config.runtime)
             if not config.runtime:
                 raise ValueError("请先下载运行环境，或选择已有的 Applio 3.6.5 文件夹")
@@ -655,6 +725,8 @@ class Studio(tk.Tk):
                     "--runtime", str(root), "--config", str(session)]
             if source:
                 args.extend(["--input", source])
+            if compare:
+                args.append("--compare")
             if command in ("offline", "recordtest"):
                 results = self.root_data / "recordings"
                 results.mkdir(exist_ok=True)
@@ -739,7 +811,9 @@ class Studio(tk.Tk):
                 if physical:
                     self.variable("input_device").set(physical[0]["key"])
             cable_text = "可用：聊天软件选择 CABLE Output" if render and capture else "未发现完整端点，请重启电脑后检测或点击安装虚拟麦克风"
-            info = f"显卡：{event['gpu']}\n引擎：{'依赖可导入' if event['engine'] else '依赖检测失败'}\n音频端点：{len(self.devices)} 个\n虚拟麦克风：{cable_text}"
+            beatrice = "可用" if event.get("beatrice") else "不可用：" + event.get("beatrice_error", "未检测")
+            info = (f"显卡：{event['gpu']}\nRVC 引擎：{'依赖可导入' if event['engine'] else '依赖检测失败'}\n"
+                    f"Beatrice 引擎：{beatrice}\n音频端点：{len(self.devices)} 个\n虚拟麦克风：{cable_text}")
             if event.get("error"):
                 info += "\n错误：" + event["error"]
             self.env_status.set(info)
@@ -748,14 +822,16 @@ class Studio(tk.Tk):
             self.log(info)
         elif kind == "metrics":
             delay = f"{event['delay_ms']} ms" if "delay_ms" in event else "—"
-            self.metrics.set(f"算法延迟：{delay}    单块推理耗时：{event['inference_ms']} ms    丢块：{event['dropped']}    输出欠载：{event['underruns']}")
+            engine = BACKENDS.get(event.get("backend"), "—")
+            self.metrics.set(f"引擎：{engine}    算法延迟：{delay}    单块推理耗时：{event['inference_ms']} ms    丢块：{event['dropped']}    输出欠载：{event['underruns']}")
             db = 20 * math.log10(max(event["rms"], 1e-6))
             self.meter["value"] = max(0, min(100, (db + 60) / 60 * 100))
         elif kind == "converted":
             self.worker_completed = True
             self.last_output = event["path"]
-            self.status.set("转换完成，点击“播放最近的转换结果”试听")
-            self.log("已生成：" + self.last_output)
+            engine = BACKENDS.get(event.get("backend"), "")
+            self.status.set(f"{engine} 转换完成，点击“播放最近的转换结果”试听；A/B 结果可在“打开转换结果文件夹”中对比")
+            self.log(f"已生成（{engine}）：" + self.last_output)
         elif kind == "error":
             self.worker_failed = True
             self.error(event["text"])
@@ -766,6 +842,9 @@ class Studio(tk.Tk):
             self.log(event["text"])
         elif kind in ("status", "started", "stopped"):
             text = event["text"]
+            if kind == "started" and event.get("engines"):
+                loaded = "、".join(BACKENDS[b] for b in event["engines"])
+                self.log("已加载引擎：" + loaded + ("（可运行中 A/B 切换）" if len(event["engines"]) > 1 else ""))
             if event.get("output"):
                 text += " → " + event["output"]
             if event.get("delay_ms") is not None:

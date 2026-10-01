@@ -139,6 +139,8 @@ elseif ($buildHelper -or $buildGui) {
             "--add-data","studio/audio_buffers.py;.",
             "--add-data","studio/routing.py;.",
             "--add-data","studio/formant.py;.",
+            "--add-data","studio/beatrice_backend.py;.",
+            "--add-data","studio/beatrice_trainer.py;.",
             "--add-data","studio/engine-manifest.json;.",
             "--add-data","studio/USER_GUIDE.txt;.",
             "--add-data","studio/licenses;licenses",

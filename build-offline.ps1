@@ -35,7 +35,7 @@ try {
     & $pythonPath -m PyInstaller --noconfirm --clean --onefile --console --name RVCSetupHelper --distpath build/app --workpath build/pyinstaller-helper --specpath . --paths studio --add-data 'studio/engine-manifest.json;.' --add-data 'vendor/vbcable/VBCABLE_Driver_Pack45.zip;.' --add-data 'vendor/models;models' studio/setup_helper.py
     if ($LASTEXITCODE -ne 0) { throw 'Setup helper build failed' }
     # 中文图形界面
-    & $pythonPath -m PyInstaller --noconfirm --clean --onefile --windowed --name RVCStudio --distpath build/app --workpath build/pyinstaller --specpath . --paths studio --add-data 'studio/worker.py;.' --add-data 'studio/settings.py;.' --add-data 'studio/audio_buffers.py;.' --add-data 'studio/routing.py;.' --add-data 'studio/formant.py;.' --add-data 'studio/engine-manifest.json;.' --add-data 'studio/USER_GUIDE.txt;.' --add-data 'studio/licenses;licenses' studio/app.py
+    & $pythonPath -m PyInstaller --noconfirm --clean --onefile --windowed --name RVCStudio --distpath build/app --workpath build/pyinstaller --specpath . --paths studio --add-data 'studio/worker.py;.' --add-data 'studio/settings.py;.' --add-data 'studio/audio_buffers.py;.' --add-data 'studio/routing.py;.' --add-data 'studio/formant.py;.' --add-data 'studio/beatrice_backend.py;.' --add-data 'studio/beatrice_trainer.py;.' --add-data 'studio/engine-manifest.json;.' --add-data 'studio/USER_GUIDE.txt;.' --add-data 'studio/licenses;licenses' studio/app.py
     if ($LASTEXITCODE -ne 0) { throw 'EXE 构建失败' }
     # 先编译“小型内层 Inno 安装程序”（不含引擎分片，约 127MB）
     & $compilerPath installer/offline.iss

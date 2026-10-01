@@ -33,6 +33,12 @@
 独占 WASAPI，以及 Applio 的 Autotune、自动音高、相位声码器。带 ● 的参数在实时变声运行中即时生效。
 共振峰在 Applio 3.6.5 中没有实现，本项目在 `studio/formant.py` 中按原版 RVC 的算法运行时补上（不修改受哈希校验的引擎文件）。
 
+**第二引擎 Beatrice v2**：在「① 模型与声音」选择变声引擎，可导入 beatrice-trainer 2.0.0-rc.0 的训练检查点
+`checkpoint_*.pt.gz`（不支持只给官方 VST 用的 paraphernalia 文件夹）。推理代码是官方训练器源码
+（MIT，原样收录为 `studio/beatrice_trainer.py`），由 `studio/beatrice_backend.py` 在内置 Applio Python 中运行，
+实时模式用滑动窗口 + SOLA 拼接。两种引擎的模型都设置后，实时变声会同时加载，运行中点“A/B 切换引擎”即可边说边对比；
+文件转换和录音试听也可一次生成 RVC / Beatrice 两个结果。
+
 软件检测到普通版 VB-CABLE 时会自动选择其播放端。没有设备时先重启，也可在“环境与驱动”页重新检测/安装。
 不改变系统默认音频设备。完整说明见 [USER_GUIDE.txt](studio/USER_GUIDE.txt)。
 
@@ -56,7 +62,7 @@ VB-CABLE 由 VB-Audio / Vincent Burel 提供，是 donationware。
 产品与捐赠：[VB-CABLE](https://vb-audio.com/Cable/)。
 本项目按厂商公开页面中普通版随应用分发的条件保留产品标识、原始包及捐赠入口；企业或机构用途遵循对应许可条件。
 详细说明：[VB-CABLE-NOTICE.txt](studio/licenses/VB-CABLE-NOTICE.txt)，[厂商许可页面](https://vb-audio.com/Services/licensing.htm)。
-Applio 使用 MIT 许可，其第三方依赖遵循各自许可。
+Applio 使用 MIT 许可，其第三方依赖遵循各自许可。Beatrice 推理代码来自 Project Beatrice 的 beatrice-trainer（MIT，见 studio/licenses/Beatrice-MIT.txt）。
 
 ## 源码与构建
 

@@ -9,6 +9,11 @@ from pathlib import Path
 
 APP_VERSION = "0.3.0-offline"
 F0_METHODS = ("rmvpe", "fcpe", "crepe-tiny", "crepe")
+# 变声引擎：key -> 界面名称
+BACKENDS = {"rvc": "RVC v2（Applio 3.6.5）", "beatrice": "Beatrice v2（2.0.0-rc.0）"}
+# Beatrice 的网络会向后看约 27.5 ms（音素 2.5 + 声码器前级 20 + 后滤波 5），实时输出须落后窗口末尾这么多
+BEATRICE_LOOKAHEAD_MS = 30
+BEATRICE_SUFFIX = ".pt.gz"
 
 
 def data_dir() -> Path:
@@ -71,14 +76,17 @@ TOGGLES = (
     ("phase_vocoder", "相位声码器拼接", True, "Applio 的相位对齐交叉淡化，可减少拼接处的相位抵消"),
     ("wasapi_exclusive", "独占 WASAPI 设备", False, "RVC“独占 WASAPI 设备”：延迟更低，但其他软件无法同时使用该设备"),
 )
-LIVE_KEYS = tuple([p.name for p in PARAMS if p.live] + [t[0] for t in TOGGLES if t[2]])
+LIVE_KEYS = tuple([p.name for p in PARAMS if p.live] + [t[0] for t in TOGGLES if t[2]] + ["backend", "beatrice_speaker"])
 
 
 @dataclass
 class Settings:
     runtime: str = ""
+    backend: str = "rvc"
     model: str = ""
     index: str = ""
+    beatrice_model: str = ""
+    beatrice_speaker: int = 0
     # 出厂默认＝男变女推荐预设（依据 B 站高播放量实时变声教程实测，详见 README）
     pitch: int = 10
     formant: float = 0.5
@@ -121,12 +129,38 @@ class Settings:
             raise ValueError("淡入淡出长度必须小于采样长度")
         if self.f0_method not in F0_METHODS:
             raise ValueError("音高算法仅支持 " + " / ".join(F0_METHODS))
+        if self.backend not in BACKENDS:
+            raise ValueError("变声引擎只能是 " + " / ".join(BACKENDS.values()))
+        if isinstance(self.beatrice_speaker, bool) or not isinstance(self.beatrice_speaker, int) \
+                or not 0 <= self.beatrice_speaker <= 9999:
+            raise ValueError("Beatrice 说话人编号必须是 0 到 9999 的整数")
         if require_model:
-            if not self.model or Path(self.model).suffix.lower() != ".pth" or not Path(self.model).is_file():
-                raise ValueError("请先导入有效的 .pth 模型文件")
-            if self.index and (Path(self.index).suffix.lower() != ".index" or not Path(self.index).is_file()):
-                raise ValueError("找不到 .index 文件，请重新选择或清空")
+            self.check_model(self.backend)
         return self
+
+    def check_model(self, backend):
+        """Raise ValueError unless the model files for `backend` are configured and present."""
+        if backend == "beatrice":
+            if not self.beatrice_model or not self.beatrice_model.lower().endswith(BEATRICE_SUFFIX) \
+                    or not Path(self.beatrice_model).is_file():
+                raise ValueError("请先导入 Beatrice v2 训练检查点（checkpoint_*.pt.gz）")
+            return
+        if not self.model or Path(self.model).suffix.lower() != ".pth" or not Path(self.model).is_file():
+            raise ValueError("请先导入有效的 .pth 模型文件")
+        if self.index and (Path(self.index).suffix.lower() != ".index" or not Path(self.index).is_file()):
+            raise ValueError("找不到 .index 文件，请重新选择或清空")
+
+    def has_model(self, backend):
+        try:
+            self.check_model(backend)
+            return True
+        except ValueError:
+            return False
+
+    @property
+    def beatrice_formant(self):
+        # Beatrice 的共振峰只训练了 -2～+2、步长 0.5 的 9 档
+        return max(-2.0, min(2.0, round(self.formant * 2) / 2))
 
     @property
     def effective_index_rate(self):
@@ -139,8 +173,12 @@ class Settings:
         return self.pitch - self.formant
 
     def algorithm_latency_ms(self):
-        """Same formula as RVC realtime_gui: block + crossfade + 10 ms SOLA (+ input NR buffer)."""
+        """Same formula as RVC realtime_gui: block + crossfade + 10 ms SOLA (+ input NR buffer).
+
+        Beatrice adds its fixed network look-ahead on top (see BEATRICE_LOOKAHEAD_MS)."""
         latency = self.chunk_ms + self.crossfade_ms + 10
+        if self.backend == "beatrice":
+            latency += BEATRICE_LOOKAHEAD_MS
         if self.input_denoise:
             latency += min(self.crossfade_ms, 40)
         return latency

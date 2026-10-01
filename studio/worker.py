@@ -13,7 +13,7 @@ import threading
 import time
 import traceback
 
-from settings import LIVE_KEYS, Settings
+from settings import BACKENDS, LIVE_KEYS, Settings
 from audio_buffers import LatestQueue
 import formant
 from routing import cable_pair
@@ -71,6 +71,13 @@ def probe():
         report["engine"] = True
     except Exception as exc:
         report["error"] = str(exc)
+    try:
+        import beatrice_backend
+        beatrice_backend.import_trainer()
+        report["beatrice"] = True
+    except Exception as exc:
+        report["beatrice"] = False
+        report["beatrice_error"] = str(exc)
     emit("probe", **report)
 
 
@@ -177,31 +184,83 @@ def apply_live(vc, config, state):
         state["output_denoise"] = wanted
 
 
+class RvcEngine:
+    """Applio's realtime VoiceChanger behind the engine interface used by realtime()."""
+
+    label = "RVC"
+
+    def __init__(self, config):
+        import torch
+        if not torch.cuda.is_available():
+            raise RuntimeError("RVC 实时模式需要可用的 NVIDIA CUDA 显卡；当前环境只能尝试文件转换")
+        validate_model(config)
+        from rvc.realtime.core import VoiceChanger
+        emit("status", text="加载 RVC 模型、ContentVec 和音高提取器…")
+        formant.install()
+        formant.set_semitones(config.formant)
+        self.vc = VoiceChanger(**config.engine_args())
+        self.device = self.vc.device
+        self.state = {}
+
+    def apply(self, config):
+        apply_live(self.vc, config, self.state)
+
+    def feed(self, audio):
+        pass  # Applio keeps its own context; it catches up within a block after switching back
+
+    def process(self, audio, config):
+        import numpy as np
+        result, volume, latency = self.vc.on_request(audio, **config.inference_args())
+        return np.asarray(result, dtype=np.float32), float(volume), float(latency[1])
+
+
+def load_engine(backend, config):
+    if backend == "rvc":
+        return RvcEngine(config)
+    import beatrice_backend
+    emit("status", text="加载 Beatrice v2 模型…")
+    engine = beatrice_backend.BeatriceEngine(config)
+    if engine.device != "cuda":
+        emit("warning", text="未检测到 CUDA，Beatrice 正在用 CPU 推理；若出现丢块请加大采样长度或减小额外推理时长")
+    return engine
+
+
+def load_engines(config, stop):
+    """Load the selected engine, plus the other one when its model is set (live A/B switching)."""
+    engines = {}
+    for backend in [config.backend] + [b for b in BACKENDS if b != config.backend]:
+        if backend != config.backend and not config.has_model(backend):
+            continue
+        if stop.is_set():
+            break
+        try:
+            engines[backend] = load_engine(backend, config)
+        except Exception as exc:
+            if backend == config.backend:
+                raise
+            emit("warning", text=f"未加载 {BACKENDS[backend]}，运行中无法切换到它：{exc}")
+    return engines
+
+
 def realtime(live, stop):
     config, _ = live.get()
     import numpy as np
     import sounddevice as sd
-    import torch
-    if not torch.cuda.is_available():
-        raise RuntimeError("实时模式需要可用的 NVIDIA CUDA 显卡；当前环境只能尝试文件转换")
-    validate_model(config)
-    from rvc.realtime.core import VoiceChanger
     devices = device_list(sd)
     inp = resolve_device(devices, config.input_device, "inputs")
     out = resolve_device(devices, config.output_device, "outputs")
     mon = resolve_device(devices, config.monitor_device, "outputs") if config.monitor else None
     if mon and mon["id"] == out["id"]:
         raise ValueError("监听耳机与主输出相同时，请关闭额外监听，避免重复播放")
-    emit("status", text="加载模型、ContentVec 和音高提取器…")
-    formant.install()
-    formant.set_semitones(config.formant)
-    vc = VoiceChanger(**config.engine_args())
+    engines = load_engines(config, stop)
     if stop.is_set():
         return
     block = int(config.chunk_ms * 48)
-    denoiser = InputDenoiser(block, int(config.crossfade_ms * 48), int(config.extra_ms * 48), vc.device)
-    engine_state = {}
-    apply_live(vc, config, engine_state)
+    denoiser = InputDenoiser(block, int(config.crossfade_ms * 48), int(config.extra_ms * 48),
+                             engines[config.backend].device)
+    for engine in engines.values():
+        engine.apply(config)
+    good = config  # last configuration every loaded engine accepted
     applied = 0
     captures = LatestQueue(2)
     main_output = LatestQueue(2)
@@ -248,8 +307,9 @@ def realtime(live, stop):
         streams.append(stream)
         # Device buffering of the capture stream and the main output stream.
         device_ms = 1000 * (float(stream.latency) + float(streams[0].latency))
-        emit("started", text="实时变声已启动", output=out["name"],
-             delay_ms=round(config.algorithm_latency_ms() + device_ms))
+        emit("started", text=f"实时变声已启动（{engines[config.backend].label}）", output=out["name"],
+             delay_ms=round(config.algorithm_latency_ms() + device_ms), engines=list(engines),
+             backend=config.backend)
         last = time.monotonic()
         last_capture = last
         while not stop.is_set():
@@ -269,12 +329,26 @@ def realtime(live, stop):
             last_capture = time.monotonic()
             config, version = live.get()
             if version != applied:
-                apply_live(vc, config, engine_state)
                 applied = version
-                emit("params", text="参数已实时生效")
+                try:
+                    if config.backend not in engines:
+                        raise ValueError(f"本次没有加载 {BACKENDS[config.backend]}，请停止后重新开始再切换")
+                    for engine in engines.values():
+                        engine.apply(config)
+                except ValueError as exc:
+                    emit("warning", text=f"参数未生效：{exc}")
+                else:
+                    if config.backend != good.backend:
+                        emit("params", text=f"已切换到 {BACKENDS[config.backend]}", backend=config.backend)
+                    else:
+                        emit("params", text="参数已实时生效")
+                    good = config
+            config = good
             audio = denoiser(audio, config.input_denoise)
-            result, volume, latency = vc.on_request(audio, **config.inference_args())
-            result = np.asarray(result, dtype=np.float32)
+            for name, engine in engines.items():
+                if name != config.backend:
+                    engine.feed(audio)
+            result, volume, inference_ms = engines[config.backend].process(audio, config)
             if not np.isfinite(result).all():
                 raise RuntimeError("模型输出了非有限音频值，已停止输出")
             gain = float(config.output_gain)
@@ -285,7 +359,7 @@ def realtime(live, stop):
             if mon:
                 monitor_output.put(result)
             if time.monotonic() - last > .5:
-                emit("metrics", inference_ms=round(float(latency[1]), 1),
+                emit("metrics", inference_ms=round(inference_ms, 1), backend=config.backend,
                      rms=float(volume), dropped=captures.dropped + main_output.dropped + monitor_output.dropped,
                      delay_ms=round(config.algorithm_latency_ms() + device_ms),
                      underruns=counters["underruns"], audio_status=counters["audio_status"])
@@ -314,11 +388,37 @@ def record(config, destination, stop):
     return True
 
 
-def offline(config, source, destination):
+def offline(config, source, destination, compare=False):
+    """Convert with the selected engine, or with both (A/B files named -RVC / -Beatrice)."""
+    import soundfile as sf
+    backends = list(BACKENDS) if compare else [config.backend]
+    for backend in backends:
+        target = destination
+        if compare:
+            target = str(Path(destination).with_name(Path(destination).stem + "-" + backend_tag(backend) + ".wav"))
+            if Path(target).exists():
+                raise ValueError("输出文件已存在，拒绝覆盖")
+        if backend == "rvc":
+            offline_rvc(config, source, target)
+        else:
+            import beatrice_backend
+            emit("status", text="正在用 Beatrice v2 转换音频文件…")
+            beatrice_backend.convert_file(config, source, target, progress=lambda text: emit("status", text=text))
+        result = Path(target)
+        if not result.is_file() or sf.info(result).frames == 0:
+            raise RuntimeError("转换没有生成有效音频，请查看运行日志")
+        emit("converted", path=str(result), backend=backend)
+
+
+def backend_tag(backend):
+    return {"rvc": "RVC", "beatrice": "Beatrice"}[backend]
+
+
+def offline_rvc(config, source, destination):
     validate_model(config)
     from core import run_infer_script
     import soundfile as sf
-    emit("status", text="正在转换音频文件；首次加载可能需要下载基础模型…")
+    emit("status", text="正在用 RVC 转换音频文件；首次加载可能需要下载基础模型…")
     formant.install()
     formant.set_semitones(config.formant)
     run_infer_script(pitch=config.effective_pitch, index_rate=config.effective_index_rate,
@@ -340,7 +440,31 @@ def offline(config, source, destination):
         audio, sr = sf.read(result, dtype="float32")
         audio = np.clip(audio * gain, -1, 1)
         sf.write(result, audio, sr, subtype=info.subtype)
-    emit("converted", path=str(result))
+
+
+def preload(config, command, compare):
+    """Heavy native initialization (torch/faiss/PortAudio) before the stdin reader starts.
+
+    The selected engine must be valid. In a realtime session the other engine is loaded
+    too when its model is set, so it is warmed here as well; its errors surface later
+    as a warning instead of failing the session."""
+    if compare:
+        for backend in BACKENDS:
+            config.check_model(backend)
+    for backend in BACKENDS:
+        optional = backend != config.backend and not compare
+        if optional and (command != "realtime" or not config.has_model(backend)):
+            continue
+        try:
+            if backend == "rvc":
+                validate_model(config)
+                from rvc.realtime.core import VoiceChanger  # noqa: F401
+            else:
+                import beatrice_backend
+                beatrice_backend.warm_up()
+        except Exception:
+            if not optional:
+                raise
 
 
 def main():
@@ -350,6 +474,7 @@ def main():
     parser.add_argument("--config")
     parser.add_argument("--input")
     parser.add_argument("--output")
+    parser.add_argument("--compare", action="store_true", help="convert with both engines (A/B)")
     args = parser.parse_args()
     engine = Path(args.runtime).resolve()
     os.chdir(engine)
@@ -395,13 +520,12 @@ def main():
     # Finish all heavy native initialization (torch/faiss model load and PortAudio
     # enumeration) BEFORE the stdin reader thread starts, to avoid the same deadlock
     # for long-running realtime/offline sessions.
-    validate_model(config)
+    preload(config, args.command, args.compare)
     import sounddevice as _sd  # noqa: F401
     try:
         _sd.query_devices()
     except Exception:
         pass
-    from rvc.realtime.core import VoiceChanger  # noqa: F401  heavy import, done pre-reader
 
     live = LiveConfig(config)
     threading.Thread(target=control, daemon=True).start()
@@ -419,7 +543,7 @@ def main():
             if not record(config, source, stop):
                 return
         if not stop.is_set():
-            offline(config, source, str(destination))
+            offline(config, source, str(destination), compare=args.compare)
 
 
 if __name__ == "__main__":
