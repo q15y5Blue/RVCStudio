@@ -67,6 +67,15 @@ def probe():
         report["cuda"] = torch.cuda.is_available()
         if report["cuda"]:
             report["gpu"] = torch.cuda.get_device_name(0)
+            try:
+                x = torch.ones(8, 8, device="cuda")
+                float((x @ x).sum())
+            except Exception as exc:
+                # Applio 3.6.5 ships CUDA 12.8 PyTorch, which has no kernels for GTX 10xx
+                # (Pascal): is_available() is True but every operation fails.
+                report["cuda"] = False
+                report["gpu"] += ("（当前内置 PyTorch 不支持这块显卡：" + str(exc).splitlines()[0][:120]
+                                  + "。GTX 10 系请运行 training\\一键训练声音.bat -FixTorchOnly 换成 CUDA 12.6 版）")
         from rvc.realtime.core import VoiceChanger
         report["engine"] = True
     except Exception as exc:

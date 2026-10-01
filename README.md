@@ -39,6 +39,11 @@
 实时模式用滑动窗口 + SOLA 拼接。两种引擎的模型都设置后，实时变声会同时加载，运行中点“A/B 切换引擎”即可边说边对比；
 文件转换和录音试听也可一次生成 RVC / Beatrice 两个结果。
 
+**训练自己的声音**：双击 `training/一键训练声音.bat`，用同一份录音分别训练 RVC 与 Beatrice，默认训练 AISHELL-3 女声 SSB0565（Apache-2.0）
+和标贝 CSMSC（仅限非商业）两把声音，共 4 个模型，训练完在「① 模型与声音」→“训练好的声音”里切换，并自动生成对比试听页。
+支持 GTX 10 系：Applio 3.6.5 自带的 CUDA 12.8 版 PyTorch 不支持 Pascal，脚本会换成同版本的 CUDA 12.6 版
+（只修这一项：`一键训练声音.bat -FixTorchOnly`，RVC Studio 的实时变声也需要）。详见 [training/README.md](training/README.md)。
+
 软件检测到普通版 VB-CABLE 时会自动选择其播放端。没有设备时先重启，也可在“环境与驱动”页重新检测/安装。
 不改变系统默认音频设备。完整说明见 [USER_GUIDE.txt](studio/USER_GUIDE.txt)。
 

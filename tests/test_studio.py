@@ -243,6 +243,25 @@ class WorkerProcessTests(unittest.TestCase):
             self.assertFalse(report["cuda"])
             self.assertEqual(report["devices"], [])
 
+    def test_probe_flags_gpu_without_kernels(self):
+        """GTX 10xx on Applio's CUDA 12.8 PyTorch: is_available() is True, every op fails."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "torch.py").write_text(
+                "class cuda:\n"
+                " @staticmethod\n def is_available(): return True\n"
+                " @staticmethod\n def get_device_name(i): return 'NVIDIA GeForce GTX 1070'\n"
+                "class _T:\n def __matmul__(self, o): raise RuntimeError('CUDA error: no kernel image is available for execution on the device')\n"
+                "def ones(*a, **k): return _T()\n", encoding="utf-8")
+            (root / "sounddevice.py").write_text("def query_hostapis(): return []\ndef query_devices(): return []\nclass default: device=(-1,-1)\n", encoding="utf-8")
+            r = subprocess.run([sys.executable, str(STUDIO / "worker.py"), "probe", "--runtime", str(root)],
+                               capture_output=True, input="", text=True, encoding="utf-8", timeout=15,
+                               env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"})
+            report = json.loads(next(x for x in r.stdout.splitlines() if x.startswith("@RVC@"))[5:])
+            self.assertFalse(report["cuda"])
+            self.assertIn("GTX 1070", report["gpu"])
+            self.assertIn("-FixTorchOnly", report["gpu"])
+
 
 class RealtimeLoopTests(unittest.TestCase):
     """Drives worker.realtime() with fake torch / sounddevice / Applio modules (no GPU)."""

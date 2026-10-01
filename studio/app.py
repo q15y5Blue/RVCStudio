@@ -218,6 +218,14 @@ class Studio(tk.Tk):
         ttk.Label(row, text="变声引擎", style="Section.TLabel").pack(side="left")
         self.backend_selector(row)
         ttk.Label(row, text="两种模型都设置后，可在「③ 实时变声」边说边 A/B 切换", style="Sub.TLabel").pack(side="left", padx=4)
+        row = ttk.Frame(tab)
+        row.pack(fill="x", pady=(8, 0))
+        ttk.Label(row, text="训练好的声音", style="Sub.TLabel").pack(side="left")
+        self.library_box = ttk.Combobox(row, state="readonly", width=36, postcommand=self.refresh_library)
+        self.library_box.pack(side="left", padx=8)
+        self.library_box.bind("<<ComboboxSelected>>", lambda e: self.use_library_voice(self.library_box.get()))
+        ttk.Label(row, text="选中后同时设置该声音的 RVC 与 Beatrice 模型（training\\一键训练声音.bat 训练的声音会出现在这里）",
+                  style="Sub.TLabel").pack(side="left")
         self.path_row(tab, "RVC v2 女声模型（.pth）", "model", "导入模型", self.import_model)
         self.path_row(tab, "配套特征索引（.index，可选；缺省时关闭检索）", "index", "导入索引", self.import_index)
         row = ttk.Frame(tab)
@@ -505,6 +513,50 @@ class Studio(tk.Tk):
         self.save_settings()
         self.status.set("已切换到内置女声：" + folder + "（主模型 ChineseFemale / 备选 ChineseFemale_HQ）")
         self.log("内置模型：" + str(pth))
+
+    def library_voices(self):
+        """Voices in the models folder: {label: (rvc .pth, .index, Beatrice .pt.gz)}.
+
+        Imported single files live in random 32-hex folders and are not listed."""
+        voices = {}
+        base = self.root_data / "models"
+        if not base.is_dir():
+            return voices
+        for folder in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+            if not folder.is_dir() or (len(folder.name) == 32 and all(c in "0123456789abcdef" for c in folder.name)):
+                continue
+            pth = sorted(folder.glob("*.pth"))
+            idx = sorted(folder.glob("*.index"))
+            ckpt = sorted(p for p in folder.iterdir() if p.name.lower().endswith(BEATRICE_SUFFIX))
+            if not pth and not ckpt:
+                continue
+            kinds = " + ".join(k for k, ok in (("RVC", pth), ("Beatrice", ckpt)) if ok)
+            voices[f"{folder.name}（{kinds}）"] = (pth[0] if pth else None, idx[0] if idx else None,
+                                                   ckpt[0] if ckpt else None)
+        return voices
+
+    def refresh_library(self):
+        self.library = self.library_voices()
+        self.library_box["values"] = list(self.library) or ["（models 文件夹里还没有声音）"]
+
+    def use_library_voice(self, label):
+        voice = getattr(self, "library", {}).get(label)
+        if voice is None or not self.ensure_idle():
+            return
+        pth, idx, ckpt = voice
+        if pth:
+            self.variable("model").set(str(pth))
+            self.variable("index").set(str(idx) if idx else "")
+        if ckpt:
+            self.variable("beatrice_model").set(str(ckpt))
+            self.variable("beatrice_speaker").set("0")
+        if pth and not ckpt and self.variable("backend").get() == "beatrice":
+            self.variable("backend").set("rvc")
+        elif ckpt and not pth and self.variable("backend").get() == "rvc":
+            self.variable("backend").set("beatrice")
+        self.save_settings()
+        self.status.set("已切换到声音：" + label)
+        self.log("声音库：" + label)
 
     def background(self, action, kind):
         self.busy = True

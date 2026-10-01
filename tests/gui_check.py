@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 os.environ["RVC_STUDIO_DATA"] = str(ROOT / "build/gui-test-data")
 sys.path.insert(0, str(ROOT / "studio"))
 from app import Studio
+from settings import Settings
 from tkinter import ttk
 
 app = Studio()
@@ -63,7 +64,7 @@ with tempfile.TemporaryDirectory() as td:
     assert app.variable("index").get() == ""
     report["import_copy_and_clear_old_index"] = "passed"
 app.defaults()
-assert app.collect().pitch == 8
+assert app.collect().pitch == Settings().pitch  # follows the factory preset
 report["preset_reset"] = "passed"
 (ROOT / "build/gui-check.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 print(json.dumps(report, ensure_ascii=False))
