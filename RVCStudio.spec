@@ -5,7 +5,7 @@ a = Analysis(
     ['studio\\app.py'],
     pathex=['studio'],
     binaries=[],
-    datas=[('studio/worker.py', '.'), ('studio/settings.py', '.'), ('studio/audio_buffers.py', '.'), ('studio/routing.py', '.'), ('studio/engine-manifest.json', '.'), ('studio/USER_GUIDE.txt', '.'), ('studio/licenses', 'licenses')],
+    datas=[('studio/worker.py', '.'), ('studio/settings.py', '.'), ('studio/audio_buffers.py', '.'), ('studio/routing.py', '.'), ('studio/formant.py', '.'), ('studio/engine-manifest.json', '.'), ('studio/USER_GUIDE.txt', '.'), ('studio/licenses', 'licenses')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

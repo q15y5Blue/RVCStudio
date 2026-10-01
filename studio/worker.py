@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -12,8 +13,9 @@ import threading
 import time
 import traceback
 
-from settings import Settings
+from settings import LIVE_KEYS, Settings
 from audio_buffers import LatestQueue
+import formant
 from routing import cable_pair
 
 PREFIX = "@RVC@"
@@ -90,11 +92,93 @@ def validate_model(config):
             raise ValueError("特征索引不是有效的 RVC v2 768 维索引")
 
 
-def extra_settings(sd, device):
-    return sd.WasapiSettings(exclusive=False, auto_convert=True) if "WASAPI" in device["host"] else None
+def extra_settings(sd, device, exclusive=False):
+    if "WASAPI" not in device["host"]:
+        return None
+    # auto_convert only exists for shared mode; exclusive mode needs the native format.
+    return sd.WasapiSettings(exclusive=True) if exclusive else sd.WasapiSettings(exclusive=False, auto_convert=True)
 
 
-def realtime(config, stop):
+class LiveConfig:
+    """Settings that the GUI may change while realtime conversion runs ("set {json}")."""
+
+    def __init__(self, config):
+        self.lock = threading.Lock()
+        self.config = config
+        self.version = 0
+
+    def update(self, values):
+        changes = {k: v for k, v in values.items() if k in LIVE_KEYS}
+        if not changes:
+            return
+        with self.lock:
+            # validate() rejects bad values; the running config stays untouched then.
+            self.config = replace(self.config, **changes).validate()
+            self.version += 1
+
+    def get(self):
+        with self.lock:
+            return self.config, self.version
+
+
+class InputDenoiser:
+    """Port of RVC realtime_gui "输入降噪": TorchGate on the 48 kHz microphone signal.
+
+    The newest `sola` samples are held back and cross-faded with the next block,
+    which is where RVC's extra min(crossfade, 40 ms) of latency comes from.
+    History is always kept so the noise estimate is ready when the user enables it.
+    """
+
+    def __init__(self, block, crossfade, extra, device):
+        import numpy as np
+        import torch
+        from noisereduce.torchgate import TorchGate
+        self.np, self.torch = np, torch
+        zc = 480  # 10 ms at 48 kHz
+        self.block = block
+        self.sola = max(1, min(crossfade, 4 * zc))
+        self.history = torch.zeros(max(extra, 24000) + crossfade + zc + block, device=device)
+        self.nr_buffer = torch.zeros(self.sola, device=device)
+        fade_in = torch.sin(0.5 * np.pi * torch.linspace(0.0, 1.0, self.sola, device=device)) ** 2
+        self.fade_in, self.fade_out = fade_in, 1 - fade_in
+        self.gate = TorchGate(sr=48000, n_fft=4 * zc, prop_decrease=0.9).to(device)
+        self.was_enabled = False
+
+    def __call__(self, audio, enabled):
+        torch = self.torch
+        block = torch.as_tensor(audio, dtype=torch.float32, device=self.history.device)
+        self.history[:-self.block] = self.history[self.block:].clone()
+        self.history[-self.block:] = block
+        if not enabled:
+            self.was_enabled = False
+            return audio
+        if not self.was_enabled:
+            self.nr_buffer.zero_()
+            self.was_enabled = True
+        window = self.history[-self.sola - self.block:]
+        clean = self.gate(window.unsqueeze(0), self.history.unsqueeze(0)).squeeze(0)
+        clean[:self.sola] = clean[:self.sola] * self.fade_in + self.nr_buffer * self.fade_out
+        self.nr_buffer[:] = clean[self.block:]
+        return clean[:self.block].detach().cpu().numpy().astype(self.np.float32)
+
+
+def apply_live(vc, config, state):
+    """Push live-changeable values into the running Applio objects (main thread only)."""
+    formant.set_semitones(config.formant)
+    engine = vc.vc_model
+    engine.input_sensitivity = 10 ** (config.threshold_db / 20)
+    wanted = config.denoise_strength if config.output_denoise else None
+    if wanted != state.get("output_denoise"):
+        if wanted is None:
+            engine.reduced_noise = None
+        else:
+            from noisereduce.torchgate import TorchGate
+            engine.reduced_noise = TorchGate(engine.pipeline.tgt_sr, prop_decrease=wanted).to(engine.device)
+        state["output_denoise"] = wanted
+
+
+def realtime(live, stop):
+    config, _ = live.get()
     import numpy as np
     import sounddevice as sd
     import torch
@@ -109,10 +193,16 @@ def realtime(config, stop):
     if mon and mon["id"] == out["id"]:
         raise ValueError("监听耳机与主输出相同时，请关闭额外监听，避免重复播放")
     emit("status", text="加载模型、ContentVec 和音高提取器…")
+    formant.install()
+    formant.set_semitones(config.formant)
     vc = VoiceChanger(**config.engine_args())
     if stop.is_set():
         return
     block = int(config.chunk_ms * 48)
+    denoiser = InputDenoiser(block, int(config.crossfade_ms * 48), int(config.extra_ms * 48), vc.device)
+    engine_state = {}
+    apply_live(vc, config, engine_state)
+    applied = 0
     captures = LatestQueue(2)
     main_output = LatestQueue(2)
     monitor_output = LatestQueue(2)
@@ -150,13 +240,16 @@ def realtime(config, stop):
         for dev, queue in [(out, main_output)] + ([(mon, monitor_output)] if mon else []):
             stream = stack.enter_context(sd.OutputStream(device=dev["id"], samplerate=48000,
                        channels=min(2, dev["outputs"]), blocksize=block, dtype="float32",
-                       latency="low", extra_settings=extra_settings(sd, dev), callback=output(queue)))
+                       latency="low", extra_settings=extra_settings(sd, dev, config.wasapi_exclusive), callback=output(queue)))
             streams.append(stream)
         stream = stack.enter_context(sd.InputStream(device=inp["id"], samplerate=48000,
                     channels=min(2, inp["inputs"]), blocksize=block, dtype="float32",
-                    latency="low", extra_settings=extra_settings(sd, inp), callback=capture))
+                    latency="low", extra_settings=extra_settings(sd, inp, config.wasapi_exclusive), callback=capture))
         streams.append(stream)
-        emit("started", text="实时变声已启动", output=out["name"])
+        # Device buffering of the capture stream and the main output stream.
+        device_ms = 1000 * (float(stream.latency) + float(streams[0].latency))
+        emit("started", text="实时变声已启动", output=out["name"],
+             delay_ms=round(config.algorithm_latency_ms() + device_ms))
         last = time.monotonic()
         last_capture = last
         while not stop.is_set():
@@ -174,6 +267,12 @@ def realtime(config, stop):
                     raise RuntimeError("麦克风连续 5 秒未提供音频，请检查设备和隐私权限")
                 continue
             last_capture = time.monotonic()
+            config, version = live.get()
+            if version != applied:
+                apply_live(vc, config, engine_state)
+                applied = version
+                emit("params", text="参数已实时生效")
+            audio = denoiser(audio, config.input_denoise)
             result, volume, latency = vc.on_request(audio, **config.inference_args())
             result = np.asarray(result, dtype=np.float32)
             if not np.isfinite(result).all():
@@ -188,6 +287,7 @@ def realtime(config, stop):
             if time.monotonic() - last > .5:
                 emit("metrics", inference_ms=round(float(latency[1]), 1),
                      rms=float(volume), dropped=captures.dropped + main_output.dropped + monitor_output.dropped,
+                     delay_ms=round(config.algorithm_latency_ms() + device_ms),
                      underruns=counters["underruns"], audio_status=counters["audio_status"])
                 last = time.monotonic()
     emit("stopped", text="音频设备已释放")
@@ -202,7 +302,7 @@ def record(config, destination, stop):
     buffer = []
     with sd.InputStream(device=inp["id"], samplerate=48000,
                         channels=min(2, inp["inputs"]), blocksize=4800,
-                        dtype="float32", extra_settings=extra_settings(sd, inp)) as stream:
+                        dtype="float32", extra_settings=extra_settings(sd, inp, config.wasapi_exclusive)) as stream:
         for _ in range(150):
             if stop.is_set():
                 return False
@@ -219,12 +319,16 @@ def offline(config, source, destination):
     from core import run_infer_script
     import soundfile as sf
     emit("status", text="正在转换音频文件；首次加载可能需要下载基础模型…")
-    run_infer_script(pitch=config.pitch, index_rate=config.effective_index_rate,
+    formant.install()
+    formant.set_semitones(config.formant)
+    run_infer_script(pitch=config.effective_pitch, index_rate=config.effective_index_rate,
         volume_envelope=config.volume_envelope, protect=config.protect,
         f0_method=config.f0_method, input_path=source, output_path=destination,
         pth_path=config.model, index_path=config.index, split_audio=False,
-        f0_autotune=False, f0_autotune_strength=1, proposed_pitch=False,
-        proposed_pitch_threshold=155, clean_audio=False, clean_strength=.5,
+        f0_autotune=config.f0_autotune, f0_autotune_strength=config.autotune_strength,
+        proposed_pitch=config.proposed_pitch and not config.f0_autotune,
+        proposed_pitch_threshold=float(config.proposed_pitch_threshold),
+        clean_audio=config.output_denoise, clean_strength=config.denoise_strength,
         export_format="WAV", embedder_model="contentvec")
     result = Path(destination)
     if not result.is_file() or sf.info(result).frames == 0:
@@ -264,12 +368,19 @@ def main():
         except (OSError, AttributeError):
             pass
     stop = threading.Event()
+    live = None
 
     def control():
         try:
             for line in sys.stdin:
-                if line.strip() == "stop":
+                command = line.strip()
+                if command == "stop":
                     break
+                if command.startswith("set ") and live is not None:
+                    try:
+                        live.update(json.loads(command[4:]))
+                    except Exception as exc:
+                        emit("warning", text=f"参数未生效：{exc}")
         finally:
             stop.set()  # Parent closed or crashed: do not leave microphone open.
 
@@ -292,9 +403,10 @@ def main():
         pass
     from rvc.realtime.core import VoiceChanger  # noqa: F401  heavy import, done pre-reader
 
+    live = LiveConfig(config)
     threading.Thread(target=control, daemon=True).start()
     if args.command == "realtime":
-        realtime(config, stop)
+        realtime(live, stop)
     else:
         destination = Path(args.output).resolve()
         if destination.exists():

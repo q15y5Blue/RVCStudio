@@ -29,7 +29,7 @@ def find(widget):
 find(app)
 book = books[0]
 report = {"tabs": []}
-for i in range(4):
+for i in range(len(book.tabs())):
     book.select(i)
     app.update()
     tab = book.nametowidget(book.tabs()[i])

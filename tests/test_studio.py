@@ -14,7 +14,7 @@ from settings import Settings
 from audio_buffers import LatestQueue
 from queue import Empty
 import runtime
-from worker import resolve_device
+from worker import LiveConfig, extra_settings, resolve_device
 
 
 class SettingsTests(unittest.TestCase):
@@ -51,6 +51,55 @@ class SettingsTests(unittest.TestCase):
             p.unlink()
             with self.assertRaises(ValueError):
                 s.validate(True)
+
+
+class RvcParameterTests(unittest.TestCase):
+    def test_new_rvc_parameters_reach_engine(self):
+        s = Settings(threshold_db=-45, f0_autotune=True, autotune_strength=.6, phase_vocoder=True, f0_method="crepe-tiny")
+        engine, infer = s.engine_args(), s.inference_args()
+        self.assertEqual(engine["silent_threshold"], -45)
+        self.assertEqual(engine["f0_method"], "crepe-tiny")
+        self.assertEqual(engine["index_path"], "")  # Applio calls .strip() on it: never None
+        self.assertTrue(infer["f0_autotune"])
+        self.assertEqual(infer["f0_autotune_strength"], .6)
+        self.assertTrue(infer["use_phase_vocoder"])
+        self.assertFalse(Settings(proposed_pitch=True, f0_autotune=True).inference_args()["proposed_pitch"])
+
+    def test_ranges_follow_param_table(self):
+        for bad in (dict(formant=2.5), dict(threshold_db=5), dict(chunk_ms=165), dict(extra_ms=6000),
+                    dict(f0_method="pm"), dict(input_denoise=1), dict(crossfade_ms=150, chunk_ms=150)):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                Settings(**bad).validate()
+        Settings(chunk_ms=1500, extra_ms=5000, crossfade_ms=150, formant=-2).validate()
+
+    def test_latency_matches_rvc_formula(self):
+        self.assertEqual(Settings(chunk_ms=160, crossfade_ms=60).algorithm_latency_ms(), 230)
+        self.assertEqual(Settings(chunk_ms=160, crossfade_ms=60, input_denoise=True).algorithm_latency_ms(), 270)
+
+    def test_old_settings_file_migrates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(json.dumps({"pitch": 9, "chunk_ms": 165, "crossfade_ms": 60}), encoding="utf-8")
+            s = Settings.load(path)
+            self.assertEqual((s.pitch, s.chunk_ms, s.formant, s.threshold_db), (9, 170, 0.0, -60))
+
+    def test_live_updates_only_touch_live_keys_and_reject_bad_values(self):
+        live = LiveConfig(Settings())
+        live.update({"pitch": 11, "formant": .5, "chunk_ms": 400, "model": "x.pth"})
+        config, version = live.get()
+        self.assertEqual((config.pitch, config.formant, config.chunk_ms, config.model, version), (11, .5, 160, "", 1))
+        with self.assertRaises(ValueError):
+            live.update({"pitch": 99})
+        self.assertEqual(live.get(), (config, 1))
+
+    def test_wasapi_exclusive_only_for_wasapi(self):
+        class FakeSd:
+            @staticmethod
+            def WasapiSettings(**kw):
+                return kw
+        self.assertEqual(extra_settings(FakeSd, {"host": "Windows WASAPI"}, True), {"exclusive": True})
+        self.assertEqual(extra_settings(FakeSd, {"host": "Windows WASAPI"}), {"exclusive": False, "auto_convert": True})
+        self.assertIsNone(extra_settings(FakeSd, {"host": "MME"}, True))
 
 
 class RuntimeTests(unittest.TestCase):
@@ -159,6 +208,82 @@ class WorkerProcessTests(unittest.TestCase):
             self.assertEqual(report["event"], "probe")
             self.assertFalse(report["cuda"])
             self.assertEqual(report["devices"], [])
+
+
+class RealtimeLoopTests(unittest.TestCase):
+    """Drives worker.realtime() with fake torch / sounddevice / Applio modules (no GPU)."""
+
+    def test_live_parameters_reach_engine_without_restart(self):
+        import types
+        import numpy as np
+        import worker
+        calls, events = [], []
+        block = 160 * 48
+
+        class Stream:
+            latency = .01
+            def __init__(self, callback=None, channels=1, **kw):
+                self.callback, self.channels, self.active, self.thread = callback, channels, True, None
+            def __enter__(self):
+                def pump():
+                    while self.active:
+                        if self.channels and self.callback:
+                            buf = np.zeros((block, self.channels), dtype=np.float32)
+                            self.callback(buf, block, None, None)
+                        time.sleep(.005)
+                self.thread = threading.Thread(target=pump, daemon=True)
+                self.thread.start()
+                return self
+            def __exit__(self, *exc):
+                self.active = False
+
+        sd = types.SimpleNamespace(
+            query_hostapis=lambda: [{"name": "MME"}],
+            query_devices=lambda: [dict(name="Mic", hostapi=0, max_input_channels=1, max_output_channels=0),
+                                   dict(name="Out", hostapi=0, max_input_channels=0, max_output_channels=2)],
+            InputStream=Stream, OutputStream=Stream)
+
+        class VoiceChanger:
+            def __init__(self, **kw):
+                self.device = "cpu"
+                self.vc_model = types.SimpleNamespace(input_sensitivity=None, reduced_noise=None, device="cpu",
+                                                      pipeline=types.SimpleNamespace(tgt_sr=40000))
+            def on_request(self, audio, **kw):
+                calls.append(kw)
+                return audio, .1, [0, 5.0, 0]
+
+        core = types.ModuleType("rvc.realtime.core")
+        core.VoiceChanger = VoiceChanger
+        torch = types.ModuleType("torch")
+        torch.cuda = types.SimpleNamespace(is_available=lambda: True)
+        fakes = {"torch": torch, "sounddevice": sd, "rvc": types.ModuleType("rvc"),
+                 "rvc.realtime": types.ModuleType("rvc.realtime"), "rvc.realtime.core": core}
+        import time
+        config = Settings(input_device="MME | Mic | 0", output_device="MME | Out | 1", formant=0.0, pitch=8)
+        live = worker.LiveConfig(config)
+        stop = threading.Event()
+        with patch.dict(sys.modules, fakes), patch.object(worker, "validate_model"), \
+             patch.object(worker.formant, "install"), patch.object(worker, "emit", lambda e, **d: events.append((e, d))), \
+             patch.object(worker, "InputDenoiser", lambda *a: (lambda audio, enabled: audio)):
+            runner = threading.Thread(target=worker.realtime, args=(live, stop))
+            runner.start()
+            deadline = time.monotonic() + 5
+            while len(calls) < 3 and time.monotonic() < deadline:
+                time.sleep(.01)
+            live.update({"pitch": 12, "formant": 1.0, "threshold_db": -40})
+            while not any(c["f0_up_key"] == 11.0 for c in calls) and time.monotonic() < deadline:
+                time.sleep(.01)
+            stop.set()
+            runner.join(5)
+        self.assertEqual(calls[0]["f0_up_key"], 8)
+        self.assertTrue(any(c["f0_up_key"] == 11.0 for c in calls))
+        self.assertEqual(worker.formant.STATE["semitones"], 1.0)
+        kinds = [e for e, _ in events]
+        self.assertIn("params", kinds)
+        self.assertIn("stopped", kinds)
+        started = dict(events)["started"]
+        self.assertEqual(started["delay_ms"], 230 + 20)
+        worker.formant.set_semitones(0)
 
 
 if __name__ == "__main__":

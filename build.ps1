@@ -13,7 +13,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw '自动化测试失败' }
     & $pythonPath -m PyInstaller --noconfirm --clean --onefile --console --name RVCSetupHelper --distpath build/app --workpath build/pyinstaller-helper --specpath . --paths studio --add-data 'studio/engine-manifest.json;.' --add-data 'vendor/vbcable/VBCABLE_Driver_Pack45.zip;.' studio/setup_helper.py
     if ($LASTEXITCODE -ne 0) { throw 'Setup helper build failed' }
-    & $pythonPath -m PyInstaller --noconfirm --clean --onefile --windowed --name RVCStudio --distpath build/app --workpath build/pyinstaller --specpath . --paths studio --add-data 'studio/worker.py;.' --add-data 'studio/settings.py;.' --add-data 'studio/audio_buffers.py;.' --add-data 'studio/routing.py;.' --add-data 'studio/engine-manifest.json;.' --add-data 'studio/USER_GUIDE.txt;.' --add-data 'studio/licenses;licenses' studio/app.py
+    & $pythonPath -m PyInstaller --noconfirm --clean --onefile --windowed --name RVCStudio --distpath build/app --workpath build/pyinstaller --specpath . --paths studio --add-data 'studio/worker.py;.' --add-data 'studio/settings.py;.' --add-data 'studio/audio_buffers.py;.' --add-data 'studio/routing.py;.' --add-data 'studio/formant.py;.' --add-data 'studio/engine-manifest.json;.' --add-data 'studio/USER_GUIDE.txt;.' --add-data 'studio/licenses;licenses' studio/app.py
     if ($LASTEXITCODE -ne 0) { throw 'EXE 构建失败' }
     & $compilerPath installer/integrated.iss
     if ($LASTEXITCODE -ne 0) { throw '安装包构建失败' }

@@ -19,7 +19,7 @@ import traceback
 import uuid
 import webbrowser
 
-from settings import APP_VERSION, Settings, data_dir
+from settings import APP_VERSION, F0_METHODS, LIVE_KEYS, PARAMS, PARAM_BY_NAME, TOGGLES, Settings, data_dir
 import runtime
 from routing import cable_pair, restore_device_key
 
@@ -29,7 +29,12 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # These run under the pinned Applio Python. They must be launched from a directory
 # that contains no OpenSSL/Python DLLs (see App.worker_script); keep this list in sync
 # with what worker.py imports as plain sibling modules.
-WORKER_SUPPORT = ("worker.py", "settings.py", "routing.py", "audio_buffers.py")
+WORKER_SUPPORT = ("worker.py", "settings.py", "routing.py", "audio_buffers.py", "formant.py")
+CARD = "#172233"
+PARAM_GROUPS = (("core", "核心参数"), ("timbre", "音色"), ("perf", "推理性能"),
+                ("noise", "门限、降噪与输出"), ("advanced", "高级"))
+GROUP_TOGGLES = {"noise": ("input_denoise", "output_denoise"),
+                 "advanced": ("f0_autotune", "proposed_pitch", "phase_vocoder", "wasapi_exclusive")}
 
 
 class Studio(tk.Tk):
@@ -60,6 +65,8 @@ class Studio(tk.Tk):
             self.config = Settings()
             self.initial_error = f"旧配置无法读取，已使用默认值：{exc}"
         self.vars = {}
+        self.bools = {}
+        self.live_job = None
         self.manifest = json.loads((HERE / "engine-manifest.json").read_text(encoding="utf-8"))
         self.configure_style()
         self.build_ui()
@@ -93,6 +100,13 @@ class Studio(tk.Tk):
         style.map("TNotebook.Tab", background=[("selected", "#286ace")])
         style.configure("TCheckbutton", background="#101622")
         style.configure("Horizontal.TProgressbar", background="#549af7", troughcolor="#1b2739")
+        style.configure("Card.TFrame", background=CARD)
+        style.configure("Card.TLabel", background=CARD, foreground="#e6edf7")
+        style.configure("CardTitle.TLabel", background=CARD, foreground="#90bcff", font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("CardSub.TLabel", background=CARD, foreground="#8394ab", font=("Microsoft YaHei UI", 9))
+        style.configure("Card.TCheckbutton", background=CARD, foreground="#e6edf7")
+        style.map("Card.TCheckbutton", background=[("active", CARD)])
+        style.configure("Horizontal.TScale", background=CARD, troughcolor="#26354b", borderwidth=0)
 
     def label(self, parent, text, style="TLabel", **pack):
         widget = ttk.Label(parent, text=text, style=style, wraplength=930, justify="left")
@@ -108,14 +122,15 @@ class Studio(tk.Tk):
         book = ttk.Notebook(body)
         book.pack(fill="both", expand=True)
         tabs = []
-        for title in ("环境与驱动", "① 模型与声音", "② 实时变声", "使用说明"):
+        for title in ("环境与驱动", "① 模型与声音", "② 变声参数", "③ 实时变声", "使用说明"):
             tab = ttk.Frame(book, padding=20)
             book.add(tab, text=title)
             tabs.append(tab)
         self.env_tab(tabs[0])
         self.model_tab(tabs[1])
-        self.audio_tab(tabs[2])
-        self.help_tab(tabs[3])
+        self.params_tab(tabs[2])
+        self.audio_tab(tabs[3])
+        self.help_tab(tabs[4])
         if self.config.runtime:
             book.select(1)
         self.status = tk.StringVar(value="就绪 · 导入女声模型，选择真实麦克风，即可开始测试")
@@ -126,8 +141,23 @@ class Studio(tk.Tk):
 
     def variable(self, name):
         if name not in self.vars:
-            self.vars[name] = tk.StringVar(value=str(getattr(self.config, name)))
+            self.vars[name] = tk.StringVar(value=self.format_value(name, getattr(self.config, name)))
         return self.vars[name]
+
+    def bool_var(self, name):
+        if name not in self.bools:
+            self.bools[name] = tk.BooleanVar(value=bool(getattr(self.config, name)))
+            self.bools[name].trace_add("write", lambda *_: self.param_changed(name))
+        return self.bools[name]
+
+    @staticmethod
+    def format_value(name, value):
+        p = PARAM_BY_NAME.get(name)
+        if p is None or isinstance(value, str):
+            return str(value)
+        if p.integer:
+            return str(int(round(value)))
+        return f"{value:.2f}"
 
     def path_row(self, parent, label, key, button, command):
         self.label(parent, label, "Sub.TLabel", pady=(12, 5))
@@ -169,23 +199,132 @@ class Studio(tk.Tk):
         ttk.Button(brow, text="使用内置备选女声（HQ / Ov2 / 350ep）",
                    command=lambda: self.use_bundled_model("ChineseFemale_HQ", "ChineseFemale_HQ.pth", "ChineseFemale_HQ.index")).pack(side="left", padx=8)
         self.label(tab, "离线版已内置两把自然普通话女声（非卡通 / 非明星 / 非唱歌），点按钮即可一键切换并 A/B 对比。", "Sub.TLabel", pady=(0, 4))
-        grid = ttk.Frame(tab)
-        grid.pack(fill="x")
-        params = [("音高 / 半音", "pitch"), ("音色检索", "index_rate"), ("辅音保护", "protect"),
-                  ("音量包络", "volume_envelope"), ("分块 / ms", "chunk_ms"), ("交叉淡化 / ms", "crossfade_ms"),
-                  ("额外上下文 / ms", "extra_ms")]
-        for i, (title, key) in enumerate(params):
-            col, row_id = (i % 4) * 2, i // 4
-            ttk.Label(grid, text=title, style="Sub.TLabel").grid(row=row_id * 2, column=col, sticky="w", pady=(8, 4), columnspan=2)
-            ttk.Entry(grid, width=12, textvariable=self.variable(key)).grid(row=row_id * 2 + 1, column=col, sticky="w", padx=(0, 18), columnspan=2)
-        ttk.Label(grid, text="音高提取", style="Sub.TLabel").grid(row=2, column=6, sticky="w", pady=(8, 4))
-        ttk.Combobox(grid, values=("rmvpe", "fcpe"), state="readonly", width=11, textvariable=self.variable("f0_method")).grid(row=3, column=6, sticky="w")
-        self.label(tab, "ContentVec · Autotune 关闭 · 自动音高关闭 · VAD 关闭 · 降噪与后处理关闭", "Sub.TLabel", pady=(15, 8))
+        self.label(tab, "音调、共振峰（性别因子）、检索、降噪、采样长度等全部参数在「② 变声参数」页调整；文件转换和录音试听同样使用这些参数。",
+                   "Sub.TLabel", pady=(15, 8))
         row = ttk.Frame(tab)
         row.pack(fill="x")
         ttk.Button(row, text="保存参数", command=self.save_settings).pack(side="left")
         ttk.Button(row, text="选择音频文件并转换", command=self.convert_file, style="Accent.TButton").pack(side="left", padx=8)
         ttk.Button(row, text="播放最近的转换结果", command=self.play_result).pack(side="left")
+
+    def params_tab(self, tab):
+        head = ttk.Frame(tab)
+        head.pack(fill="x")
+        ttk.Label(head, text="变声参数", style="Section.TLabel").pack(side="left")
+        ttk.Button(head, text="保存参数", command=self.save_settings).pack(side="right")
+        ttk.Button(head, text="恢复普通话推荐参数", command=self.defaults).pack(side="right", padx=8)
+        self.label(tab, "● 实时变声运行中拖动即生效　○ 需停止后重新开始。名称与原版 RVC 实时 GUI 对应，引擎为内置 Applio 3.6.5。",
+                   "Sub.TLabel", pady=(6, 8))
+        holder = ttk.Frame(tab)
+        holder.pack(fill="both", expand=True)
+        canvas = tk.Canvas(holder, bg="#101622", highlightthickness=0)
+        bar = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        wheel = lambda e: canvas.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", wheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        inner.columnconfigure(0, weight=1, uniform="col")
+        inner.columnconfigure(1, weight=1, uniform="col")
+        columns = [ttk.Frame(inner), ttk.Frame(inner)]
+        columns[0].grid(row=0, column=0, sticky="new", padx=(0, 8))
+        columns[1].grid(row=0, column=1, sticky="new", padx=(8, 0))
+        self.scales = {}
+        toggles = {t[0]: t for t in TOGGLES}
+        for i, (group, title) in enumerate(PARAM_GROUPS):
+            card = ttk.Frame(columns[0 if i < 3 else 1], style="Card.TFrame", padding=(14, 10))
+            card.pack(fill="x", pady=(0, 12))
+            ttk.Label(card, text=title, style="CardTitle.TLabel").pack(anchor="w", pady=(0, 4))
+            for p in (p for p in PARAMS if p.group == group):
+                self.slider_row(card, p)
+            if group == "perf":
+                row = ttk.Frame(card, style="Card.TFrame")
+                row.pack(fill="x", pady=(6, 2))
+                ttk.Label(row, text="○ 音高算法", style="Card.TLabel").pack(side="left")
+                box = ttk.Combobox(row, values=F0_METHODS, state="readonly", width=11, textvariable=self.variable("f0_method"))
+                box.pack(side="right")
+                self.variable("f0_method").trace_add("write", lambda *_: self.param_changed("f0_method"))
+                ttk.Label(card, text="rmvpe 稳定（推荐）；fcpe 更快；crepe-tiny / crepe 更细腻但更吃显卡。原版 RVC 的 pm 在 Applio 中不可用。",
+                          style="CardSub.TLabel", wraplength=420, justify="left").pack(anchor="w")
+            for name in GROUP_TOGGLES.get(group, ()):
+                _, label, live, hint = toggles[name]
+                ttk.Checkbutton(card, text=("● " if live else "○ ") + label, style="Card.TCheckbutton",
+                                variable=self.bool_var(name)).pack(anchor="w", pady=(6, 0))
+                ttk.Label(card, text=hint, style="CardSub.TLabel", wraplength=420, justify="left").pack(anchor="w", padx=(22, 0))
+
+    def slider_row(self, parent, p):
+        row = ttk.Frame(parent, style="Card.TFrame")
+        row.pack(fill="x", pady=(6, 2))
+        top = ttk.Frame(row, style="Card.TFrame")
+        top.pack(fill="x")
+        ttk.Label(top, text=("● " if p.live else "○ ") + p.label, style="Card.TLabel").pack(side="left")
+        var = self.variable(p.name)
+        ttk.Entry(top, width=7, justify="right", textvariable=var).pack(side="right")
+        state = {"sync": False}
+
+        def from_scale(value):
+            if state["sync"]:
+                return
+            snapped = round(round((float(value) - p.low) / p.step) * p.step + p.low, 4)
+            state["sync"] = True
+            var.set(self.format_value(p.name, snapped))
+            state["sync"] = False
+
+        scale = ttk.Scale(row, from_=p.low, to=p.high, orient="horizontal", command=from_scale)
+        scale.pack(fill="x", pady=(2, 0))
+
+        def from_text(*_):
+            try:
+                value = float(var.get())
+            except ValueError:
+                return
+            if not state["sync"] and p.low <= value <= p.high:
+                state["sync"] = True
+                scale.set(value)
+                state["sync"] = False
+            self.param_changed(p.name)
+
+        var.trace_add("write", from_text)
+        from_text()
+        ttk.Label(row, text=p.hint, style="CardSub.TLabel", wraplength=420, justify="left").pack(anchor="w")
+        self.scales[p.name] = scale
+
+    def realtime_running(self):
+        return self.process is not None and self.worker_command == "realtime" and self.process.stdin is not None
+
+    def param_changed(self, name):
+        if not hasattr(self, "status") or not self.realtime_running():
+            return
+        if name in LIVE_KEYS:
+            if self.live_job is not None:
+                self.after_cancel(self.live_job)
+            self.live_job = self.after(150, self.push_live)
+        else:
+            self.status.set("该参数需停止后重新开始实时变声才会生效")
+
+    def push_live(self):
+        self.live_job = None
+        if not self.realtime_running():
+            return
+        try:
+            config = self.collect()
+        except ValueError:
+            return  # half-typed value: wait for the next edit
+        try:
+            self.process.stdin.write("set " + json.dumps(config.live_values(), ensure_ascii=False) + "\n")
+            self.process.stdin.flush()
+        except (OSError, ValueError):
+            return
+        self.config = config
+        try:
+            config.save(self.config_file)
+        except OSError:
+            pass
 
     def audio_tab(self, tab):
         self.label(tab, "选择麦克风与输出设备", "Section.TLabel")
@@ -196,13 +335,12 @@ class Studio(tk.Tk):
             box = ttk.Combobox(tab, textvariable=self.variable(key), state="readonly")
             box.pack(fill="x")
             self.device_boxes[key] = box
-        self.monitor_var = tk.BooleanVar(value=self.config.monitor)
-        ttk.Checkbutton(tab, text="启用额外耳机监听", variable=self.monitor_var).pack(anchor="w", pady=10)
+        ttk.Checkbutton(tab, text="启用额外耳机监听", variable=self.bool_var("monitor")).pack(anchor="w", pady=10)
         grow = ttk.Frame(tab)
         grow.pack(fill="x", pady=(0, 4))
         ttk.Label(grow, text="输出增益（倍）", style="Sub.TLabel").pack(side="left")
         ttk.Entry(grow, width=8, textvariable=self.variable("output_gain")).pack(side="left", padx=8)
-        self.label(tab, "输出声音偏小就调大：1.0 为原始，1.5≈+3.5dB，2.0≈+6dB，3.0≈+9.5dB；过高会削顶爆音。改后需停止并重新开始变声。",
+        self.label(tab, "输出声音偏小就调大：1.0 为原始，1.5≈+3.5dB，2.0≈+6dB，3.0≈+9.5dB；过高会削顶爆音。变声运行中修改即时生效。",
                    "Sub.TLabel", pady=(0, 6))
         row = ttk.Frame(tab)
         row.pack(fill="x", pady=6)
@@ -210,11 +348,11 @@ class Studio(tk.Tk):
         ttk.Button(row, text="录音 15 秒并转换", command=self.record_test).pack(side="left", padx=8)
         ttk.Button(row, text="开始实时变声", command=self.start_realtime, style="Accent.TButton").pack(side="left")
         ttk.Button(row, text="停止", command=self.stop_worker).pack(side="left", padx=8)
-        self.metrics = tk.StringVar(value="单块推理耗时：—    丢块：—    输出欠载：—")
+        self.metrics = tk.StringVar(value="算法延迟：—    单块推理耗时：—    丢块：—    输出欠载：—")
         ttk.Label(tab, textvariable=self.metrics).pack(anchor="w", pady=(12, 6))
         self.meter = ttk.Progressbar(tab, maximum=100)
         self.meter.pack(fill="x")
-        self.label(tab, "微信 / Discord 的麦克风请选择 CABLE Output，扬声器仍选你的耳机。\n推理耗时不等于通话总延迟。修改参数后请停止并重新开始变声。", "Sub.TLabel", pady=12)
+        self.label(tab, "微信 / Discord 的麦克风请选择 CABLE Output，扬声器仍选你的耳机。\n“算法延迟”与原版 RVC 同口径（采样长度 + 淡入淡出 + 10 ms + 输入降噪 + 声卡缓冲），不含聊天软件和网络。\n「② 变声参数」中带 ● 的参数运行中即时生效，带 ○ 的需停止并重新开始。", "Sub.TLabel", pady=12)
 
     def help_tab(self, tab):
         self.label(tab, "从试听开始，再接入通话", "Section.TLabel")
@@ -259,12 +397,20 @@ class Studio(tk.Tk):
         values = asdict(self.config)
         for name, var in self.vars.items():
             value = var.get().strip()
-            if name in ("pitch", "chunk_ms", "crossfade_ms", "extra_ms"):
-                value = int(value)
-            elif name in ("index_rate", "protect", "volume_envelope", "output_gain"):
-                value = float(value)
+            p = PARAM_BY_NAME.get(name)
+            if p is not None:
+                try:
+                    number = float(value)
+                except ValueError:
+                    raise ValueError(f"{p.label} 需要填写数字") from None
+                if p.integer:
+                    if number != int(number):
+                        raise ValueError(f"{p.label} 必须为整数")
+                    number = int(number)
+                value = number
             values[name] = value
-        values["monitor"] = self.monitor_var.get()
+        for name, var in self.bools.items():
+            values[name] = bool(var.get())
         config = Settings(**values).validate(require_model=model)
         return config
 
@@ -278,8 +424,11 @@ class Studio(tk.Tk):
 
     def defaults(self):
         defaults = Settings()
-        for key in ("pitch", "index_rate", "protect", "volume_envelope", "output_gain", "chunk_ms", "crossfade_ms", "extra_ms", "f0_method"):
-            self.variable(key).set(str(getattr(defaults, key)))
+        for p in PARAMS:
+            self.variable(p.name).set(self.format_value(p.name, getattr(defaults, p.name)))
+        self.variable("f0_method").set(defaults.f0_method)
+        for name, *_ in TOGGLES:
+            self.bool_var(name).set(getattr(defaults, name))
         self.save_settings()
 
     def clear_index(self):
@@ -598,7 +747,8 @@ class Studio(tk.Tk):
             self.status.set("检测完成，请导入模型并选择音频设备")
             self.log(info)
         elif kind == "metrics":
-            self.metrics.set(f"单块推理耗时：{event['inference_ms']} ms    丢块：{event['dropped']}    输出欠载：{event['underruns']}")
+            delay = f"{event['delay_ms']} ms" if "delay_ms" in event else "—"
+            self.metrics.set(f"算法延迟：{delay}    单块推理耗时：{event['inference_ms']} ms    丢块：{event['dropped']}    输出欠载：{event['underruns']}")
             db = 20 * math.log10(max(event["rms"], 1e-6))
             self.meter["value"] = max(0, min(100, (db + 60) / 60 * 100))
         elif kind == "converted":
@@ -609,10 +759,17 @@ class Studio(tk.Tk):
         elif kind == "error":
             self.worker_failed = True
             self.error(event["text"])
+        elif kind == "params":
+            self.status.set(event["text"])
+        elif kind == "warning":
+            self.status.set(event["text"])
+            self.log(event["text"])
         elif kind in ("status", "started", "stopped"):
             text = event["text"]
             if event.get("output"):
                 text += " → " + event["output"]
+            if event.get("delay_ms") is not None:
+                text += f"（算法延迟约 {event['delay_ms']} ms）"
             self.status.set(text)
             self.log(text)
 
