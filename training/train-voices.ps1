@@ -37,6 +37,7 @@ param(
     [string]$TestAudio       = "",
     [string]$HfEndpoint      = "https://hf-mirror.com",
     [string]$PipIndex        = "https://pypi.tuna.tsinghua.edu.cn/simple",
+    [string]$TorchMirror     = "https://mirrors.aliyun.com/pytorch-wheels",
     [switch]$Yes,
     [switch]$NoConfigure,
     [switch]$CompareOnly,
@@ -79,6 +80,21 @@ function Succeeds($exe, [string[]]$argv) {
     $saved = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     try { & $exe @argv *> $null; return ($LASTEXITCODE -eq 0) } catch { return $false } finally { $ErrorActionPreference = $saved }
 }
+# PyTorch 轮子有 2.6～2.9 GB：pip 不能断点续传，网络一卡就从头再来。
+# 先由 train_helpers 断点续传下载（先国内镜像，再官方源）并按 pytorch.org 公布的 SHA-256 校验，再让 pip 装本地文件。
+function FetchTorch($version) {
+    $wheelDir = Join-Path $WorkDir "wheels"
+    $argv = @($helpers, "fetch-wheels", "--index", "https://download.pytorch.org/whl/$cudaTag",
+              "--pkg", "torch==$version+$cudaTag", "--pkg", "torchaudio==$version+$cudaTag", "--dest", $wheelDir)
+    if ($TorchMirror) { $argv += @("--mirror", "$TorchMirror/$cudaTag") }
+    Log "> 下载 PyTorch $version+$cudaTag（约 2.6～2.9 GB，可断点续传：中断后重新运行会接着下载）"
+    $out = @(& $py @argv)
+    if ($LASTEXITCODE -ne 0) { Fail "下载 PyTorch $version+$cudaTag 失败，重新运行会从断点继续" }
+    $wheels = @($out | Where-Object { $_ -like "*.whl" })
+    if ($wheels.Count -ne 2) { Fail "没有得到 torch / torchaudio 安装包" }
+    return $wheels
+}
+$pipNet = @("--timeout", "60", "--retries", "10")
 function Confirm($question) {
     if ($Yes) { return $true }
     $answer = Read-Host "$question [Y/n]"
@@ -134,11 +150,11 @@ if (-not $check.ok) {
     Log "内置引擎的 PyTorch（$($check.torch)）不能在这块显卡上运行：$($check.error)" "Yellow"
     Log "Applio 3.6.5 自带的是 CUDA 12.8 版 PyTorch，它从 2.8 版起去掉了 GTX 10 系（Pascal）的支持；" "Yellow"
     Log "同版本号的 CUDA 12.6 版（$torchVer+$cudaTag）仍然支持。替换后 RVC Studio 的实时变声也能在这块显卡上运行。" "Yellow"
-    if (-not (Confirm "现在把引擎里的 torch / torchaudio 换成 $torchVer+$cudaTag 吗？（约 2.5 GB 下载）")) { Fail "已取消" }
+    if (-not (Confirm "现在把引擎里的 torch / torchaudio 换成 $torchVer+$cudaTag 吗？（约 2.6 GB 下载）")) { Fail "已取消" }
     if (-not (Succeeds $py @("-m", "pip", "--version"))) { Run $py @("-m", "ensurepip", "--upgrade") "为引擎安装 pip" }
-    $audioVer = $torchVer
-    Run $py @("-m", "pip", "install", "--no-deps", "--force-reinstall", "torch==$torchVer+$cudaTag", "torchaudio==$audioVer+$cudaTag",
-              "--index-url", "https://download.pytorch.org/whl/$cudaTag") "安装 PyTorch $torchVer+$cudaTag"
+    $wheels = FetchTorch $torchVer
+    Run $py (@("-m", "pip", "install", "--no-deps", "--force-reinstall") + $wheels) "安装 PyTorch $torchVer+$cudaTag"
+    Remove-Item -LiteralPath $wheels -ErrorAction SilentlyContinue
     $check = (& $py $helpers gpu-check | Select-Object -Last 1) | ConvertFrom-Json
     if (-not $check.ok) { Fail "替换后仍无法使用显卡：$($check.error)" }
 }
@@ -211,10 +227,11 @@ if ($Engines -contains "beatrice") {
     if (-not (Test-Path -LiteralPath (Join-Path $venv ".ready"))) {
         if (-not (Test-Path -LiteralPath $vpy)) { RunVenv $py @("-m", "venv", $venv) "创建独立 Python 环境" }
         # 训练器要求 torchaudio < 2.9；2.8.0 的 CUDA 12.6 版仍支持 GTX 10 系
-        RunVenv $vpy @("-m", "pip", "install", "torch==2.8.0+$cudaTag", "torchaudio==2.8.0+$cudaTag",
-                   "--index-url", "https://download.pytorch.org/whl/$cudaTag") "安装 PyTorch 2.8.0+$cudaTag（约 2.5 GB）"
-        RunVenv $vpy @("-m", "pip", "install", "-i", $PipIndex, "numpy", "soundfile", "tqdm", "tensorboard", "pyworld==0.3.5",
-                   "huggingface_hub") "安装训练依赖"
+        $wheels = FetchTorch "2.8.0"
+        RunVenv $vpy (@("-m", "pip", "install") + $pipNet + @("-i", $PipIndex) + $wheels) "安装 PyTorch 2.8.0+$cudaTag"
+        RunVenv $vpy (@("-m", "pip", "install") + $pipNet + @("-i", $PipIndex, "numpy", "soundfile", "tqdm", "tensorboard",
+                   "pyworld==0.3.5", "huggingface_hub")) "安装训练依赖"
+        Remove-Item -LiteralPath $wheels -ErrorAction SilentlyContinue
         Set-Content -LiteralPath (Join-Path $venv ".ready") -Value "ok"
     }
     if (-not (Test-Path -LiteralPath (Join-Path $trainer "beatrice_trainer\__main__.py"))) {

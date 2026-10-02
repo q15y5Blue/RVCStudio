@@ -20,6 +20,7 @@ import re
 import shutil
 import sys
 import time
+import urllib.error
 import urllib.request
 
 APPLIO_RESOURCES = "{endpoint}/IAHispano/Applio/resolve/main/Resources/{path}"
@@ -34,6 +35,11 @@ RVC_ASSETS = {
 
 def log(msg):
     print(msg, flush=True)
+
+
+def progress(msg):
+    """For commands whose stdout is captured by train-voices.ps1: keep progress visible."""
+    print(msg, file=sys.stderr, flush=True)
 
 
 def gpu_check(_):
@@ -171,6 +177,94 @@ def configure_studio(args):
     log(f"  已写入 RVC Studio 设置：{path}")
 
 
+def resumable_download(url, dest: Path, retries=40):
+    """HTTP Range download that survives stalls (pip restarts a 2.9 GB wheel from zero)."""
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    size = None
+    last = time.monotonic()
+    for attempt in range(retries):
+        have = tmp.stat().st_size if tmp.exists() else 0
+        if size is not None and have >= size:
+            break
+        headers = {"User-Agent": "RVCStudio-training"}
+        if have:
+            headers["Range"] = f"bytes={have}-"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as r:
+                if have and r.status != 206:
+                    tmp.unlink()                      # server ignored Range: start over
+                    continue
+                total = r.headers.get("Content-Range", "").rpartition("/")[2] or r.headers.get("Content-Length")
+                size = int(total) if total and total.isdigit() else size
+                with tmp.open("ab") as out:
+                    while True:
+                        chunk = r.read(4 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        have += len(chunk)
+                        if time.monotonic() - last > 10 and size:
+                            progress(f"    {have / 1024 ** 3:.2f} / {size / 1024 ** 3:.2f} GB")
+                            last = time.monotonic()
+            if size is None or have >= size:
+                break
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 404):
+                raise                                 # not on this server: try the next one
+            if exc.code == 416 and have:              # .part already complete: the SHA-256 check decides
+                size = have
+                break
+            progress(f"    连接中断（{exc}），{min(30, 3 + attempt)} 秒后续传…")
+            time.sleep(min(30, 3 + attempt))
+        except Exception as exc:  # noqa: BLE001
+            progress(f"    连接中断（{exc}），{min(30, 3 + attempt)} 秒后续传…")
+            time.sleep(min(30, 3 + attempt))
+    if not tmp.exists() or (size is not None and tmp.stat().st_size != size):
+        raise RuntimeError(f"下载不完整：{url}")
+    tmp.replace(dest)
+
+
+def fetch_wheels(args):
+    """Download PyTorch wheels for this Python with resume, verified against pytorch.org's
+    published SHA-256. Prints the local paths (one per line) for pip to install."""
+    import hashlib
+    import urllib.parse
+    tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    dest = Path(args.dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for spec in args.pkg:
+        name, version = spec.split("==")
+        filename = f"{name}-{version}-{tag}-{tag}-win_amd64.whl"
+        quoted = urllib.parse.quote(filename)
+        page = urllib.request.urlopen(f"{args.index}/{name}/", timeout=120).read().decode("utf-8", "replace")
+        m = re.search(re.escape(quoted) + r"#sha256=([0-9a-f]{64})", page)
+        if not m:
+            raise SystemExit(f"PyTorch 官方索引里没有 {filename}")
+        expected = m.group(1)
+        target = dest / filename
+        for url in [f"{args.mirror}/{quoted}"] * bool(args.mirror) + [f"https://download.pytorch.org/whl/{args.index.rsplit('/', 1)[-1]}/{quoted}"]:
+            if target.is_file():
+                break
+            progress(f"  下载 {filename}：{url.split('/')[2]}")
+            try:
+                resumable_download(url, target)
+            except urllib.error.HTTPError as exc:
+                progress(f"    {url.split('/')[2]} 没有这个文件（{exc.code}），换下一个下载源")
+        if not target.is_file():
+            raise SystemExit(f"无法下载 {filename}")
+        h = hashlib.sha256()
+        with target.open("rb") as f:
+            for block in iter(lambda: f.read(1 << 22), b""):
+                h.update(block)
+        if h.hexdigest() != expected:
+            target.unlink()
+            raise SystemExit(f"{filename} 校验失败（文件损坏），已删除，请重新运行")
+        progress(f"  {filename} 校验通过")
+        paths.append(str(target))
+    print("\n".join(paths))
+
+
 MALE_SAMPLE_SPEAKER = "SSB0710"     # AISHELL-3, adult northern male: stand-in for "your voice"
 
 
@@ -266,6 +360,12 @@ table{{border-collapse:collapse}}td,th{{padding:8px 14px;border-bottom:1px solid
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("fetch-wheels")
+    p.add_argument("--index", required=True, help="e.g. https://download.pytorch.org/whl/cu126")
+    p.add_argument("--mirror", default="", help="flat mirror tried first, e.g. https://mirrors.aliyun.com/pytorch-wheels/cu126")
+    p.add_argument("--pkg", action="append", required=True, help="name==version, e.g. torch==2.8.0+cu126")
+    p.add_argument("--dest", required=True)
+    p.set_defaults(fn=fetch_wheels)
     p = sub.add_parser("compare")
     p.add_argument("--runtime", required=True)
     p.add_argument("--worker", required=True)
