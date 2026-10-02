@@ -45,7 +45,7 @@
 一键训练声音.bat -FixTorchOnly                 只修复 GTX 10 系的引擎 PyTorch
 ```
 
-下载默认走 hf-mirror.com（国内较快），失败时自动改用 huggingface.co；Python 依赖默认用清华镜像（`-PipIndex` 可改）。
+下载默认走 hf-mirror.com（国内较快），失败时自动改用 huggingface.co；Python 依赖同时查官方 PyPI 和清华镜像，任一个连不上都不影响（`-PipIndex` / `-PipExtraIndex` 可改）。
 PyTorch 安装包（2.6～2.9 GB）默认直接从 download.pytorch.org 断点续传下载；想用镜像可加 `-TorchMirror https://mirrors.aliyun.com/pytorch-wheels`。
 
 ## 为什么是 SSB0565

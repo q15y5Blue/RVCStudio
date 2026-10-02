@@ -36,7 +36,9 @@ param(
     [string]$CsmscArchive    = "",
     [string]$TestAudio       = "",
     [string]$HfEndpoint      = "https://hf-mirror.com",
-    [string]$PipIndex        = "https://pypi.tuna.tsinghua.edu.cn/simple",
+    # pip 同时查两个源：任一个连不上或拒绝访问都不影响安装
+    [string]$PipIndex        = "https://pypi.org/simple",
+    [string]$PipExtraIndex   = "https://pypi.tuna.tsinghua.edu.cn/simple",
     # PyTorch 安装包默认直接从官方源下载（实测比阿里云镜像快）；填镜像地址则先试镜像
     [string]$TorchMirror     = "",
     [switch]$Yes,
@@ -95,7 +97,8 @@ function FetchTorch($version) {
     if ($wheels.Count -ne 2) { Fail "没有得到 torch / torchaudio 安装包" }
     return $wheels
 }
-$pipNet = @("--timeout", "60", "--retries", "10")
+$pipNet = @("--timeout", "60", "--retries", "10", "-i", $PipIndex)
+if ($PipExtraIndex) { $pipNet += @("--extra-index-url", $PipExtraIndex) }
 function Confirm($question) {
     if ($Yes) { return $true }
     $answer = Read-Host "$question [Y/n]"
@@ -229,8 +232,8 @@ if ($Engines -contains "beatrice") {
         if (-not (Test-Path -LiteralPath $vpy)) { RunVenv $py @("-m", "venv", $venv) "创建独立 Python 环境" }
         # 训练器要求 torchaudio < 2.9；2.8.0 的 CUDA 12.6 版仍支持 GTX 10 系
         $wheels = FetchTorch "2.8.0"
-        RunVenv $vpy (@("-m", "pip", "install") + $pipNet + @("-i", $PipIndex) + $wheels) "安装 PyTorch 2.8.0+$cudaTag"
-        RunVenv $vpy (@("-m", "pip", "install") + $pipNet + @("-i", $PipIndex, "numpy", "soundfile", "tqdm", "tensorboard",
+        RunVenv $vpy (@("-m", "pip", "install") + $pipNet + $wheels) "安装 PyTorch 2.8.0+$cudaTag"
+        RunVenv $vpy (@("-m", "pip", "install") + $pipNet + @("numpy", "soundfile", "tqdm", "tensorboard",
                    "pyworld==0.3.5", "huggingface_hub")) "安装训练依赖"
         Remove-Item -LiteralPath $wheels -ErrorAction SilentlyContinue
         Set-Content -LiteralPath (Join-Path $venv ".ready") -Value "ok"
