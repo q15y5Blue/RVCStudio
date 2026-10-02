@@ -256,7 +256,9 @@ if ($Engines -contains "beatrice") {
         $cfg = Join-Path $WorkDir "beatrice-$voice.json"
         Run $py @($helpers, "beatrice-config", "--trainer", $trainer, "--out", $cfg, "--amp", "$amp",
                   "--batch", "$beatriceBatch", "--steps", "$BeatriceSteps", "--workers", "$workers") "生成 Beatrice 配置"
-        $argv = @("beatrice_trainer", "-d", $dataDir, "-o", $outDir, "-c", $cfg)
+        # 必须运行文件而不是文件夹：Windows 的 DataLoader 子进程会重新导入主模块，
+        # 以文件夹（python beatrice_trainer）启动时 multiprocessing 会跳过这一步，报 Can't get attribute 'WavDataset'
+        $argv = @("beatrice_trainer\__main__.py", "-d", $dataDir, "-o", $outDir, "-c", $cfg)
         if (Test-Path -LiteralPath (Join-Path $outDir "checkpoint_latest.pt.gz")) { $argv += "-r"; Log "从上次的检查点继续" }
         Log "开始训练；可随时关闭窗口，重新运行会从最近保存的检查点继续（每 2000 步保存一次）" "Yellow"
         Push-Location -LiteralPath $trainer
