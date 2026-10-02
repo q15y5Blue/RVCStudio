@@ -289,6 +289,9 @@ def hf_tree(endpoint, repo, revision):
         url = link.split(";")[0].strip("<> ") if 'rel="next"' in link else None
         if url and url.startswith("/"):
             url = endpoint + url
+        elif url:
+            # hf-mirror 的分页 Link 头指向 huggingface.co（国内直连/常见节点均不通），改回当前 endpoint
+            url = re.sub(r"^https?://[^/]+", endpoint, url)
     return files
 
 
