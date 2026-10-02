@@ -234,15 +234,16 @@ if ($Engines -contains "beatrice") {
         $wheels = FetchTorch "2.8.0"
         RunVenv $vpy (@("-m", "pip", "install") + $pipNet + $wheels) "安装 PyTorch 2.8.0+$cudaTag"
         RunVenv $vpy (@("-m", "pip", "install") + $pipNet + @("numpy", "soundfile", "tqdm", "tensorboard",
-                   "pyworld==0.3.5", "huggingface_hub")) "安装训练依赖"
+                   "pyworld==0.3.5")) "安装训练依赖"
         Remove-Item -LiteralPath $wheels -ErrorAction SilentlyContinue
         Set-Content -LiteralPath (Join-Path $venv ".ready") -Value "ok"
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $trainer "beatrice_trainer\__main__.py"))) {
-        # 固定在 2.0.0-rc.0：与 RVC Studio 内置的 Beatrice 推理代码一致
-        $code = "from huggingface_hub import snapshot_download as s; s('fierce-cats/beatrice-trainer', revision='f34836de014b86956096878aecb8d3b17feaaa0b', local_dir=r'$trainer')"
-        RunVenv $vpy @("-c", $code) "下载 beatrice-trainer 2.0.0-rc.0（约 460 MB）"
-    }
+    # 固定在 2.0.0-rc.0：与 RVC Studio 内置的 Beatrice 推理代码一致。
+    # 逐个文件走普通下载地址（不用 huggingface_hub：它的 xet 传输经 hf-mirror.com 会卡在 0 字节），
+    # 每个大文件按 SHA-256 校验，镜像失败自动换 huggingface.co；已下好的文件会跳过。
+    Run $py @($helpers, "fetch-hf-repo", "--repo", "fierce-cats/beatrice-trainer",
+              "--revision", "f34836de014b86956096878aecb8d3b17feaaa0b", "--dest", $trainer,
+              "--endpoint", $HfEndpoint) "下载 beatrice-trainer 2.0.0-rc.0（2021 个文件，约 460 MB）"
     if ($pascal) { $amp = 0 } else { $amp = 1 }
     foreach ($voice in $voices) {
         Step "训练 Beatrice：$voice（$BeatriceSteps 步，batch $beatriceBatch）"

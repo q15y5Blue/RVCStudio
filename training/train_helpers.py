@@ -203,7 +203,7 @@ def resumable_download(url, dest: Path, retries=40):
                             break
                         out.write(chunk)
                         have += len(chunk)
-                        if time.monotonic() - last > 10 and size:
+                        if time.monotonic() - last > 10 and size and size > 50 * 1024 ** 2:
                             progress(f"    {have / 1024 ** 3:.2f} / {size / 1024 ** 3:.2f} GB")
                             last = time.monotonic()
             if size is None or have >= size:
@@ -263,6 +263,99 @@ def fetch_wheels(args):
         progress(f"  {filename} 校验通过")
         paths.append(str(target))
     print("\n".join(paths))
+
+
+HF_ENDPOINTS = ("https://hf-mirror.com", "https://huggingface.co")
+COMPLETE_MARKER = ".studio-complete"
+
+
+def file_sha256(path: Path):
+    import hashlib
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 22), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def hf_tree(endpoint, repo, revision):
+    url = f"{endpoint}/api/models/{repo}/tree/{revision}?recursive=true"
+    files = []
+    while url:
+        req = urllib.request.Request(url, headers={"User-Agent": "RVCStudio-training"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            files += [x for x in json.load(r) if x.get("type") == "file"]
+            link = r.headers.get("Link", "")
+        url = link.split(";")[0].strip("<> ") if 'rel="next"' in link else None
+        if url and url.startswith("/"):
+            url = endpoint + url
+    return files
+
+
+def fetch_hf_repo(args):
+    """Download a Hugging Face model repo file by file over plain /resolve/ URLs.
+
+    huggingface_hub's xet transfer can hang at 0 bytes behind hf-mirror.com, which only
+    proxies the normal file URLs. Each LFS file is checked against its SHA-256 from the
+    tree listing; each file falls back to the other endpoint on failure."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import urllib.parse
+    dest = Path(args.dest)
+    marker = dest / COMPLETE_MARKER
+    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == args.revision:
+        log("  已下载完整，跳过")
+        return
+    endpoints = [args.endpoint] + [e for e in HF_ENDPOINTS if e != args.endpoint]
+    files = None
+    for endpoint in endpoints:
+        try:
+            files = hf_tree(endpoint, args.repo, args.revision)
+            break
+        except Exception as exc:  # noqa: BLE001
+            log(f"  {endpoint} 无法获取文件列表：{exc}")
+    if not files:
+        raise SystemExit(f"无法获取 {args.repo} 的文件列表，请检查网络")
+    if args.only:
+        files = [f for f in files if any(f["path"].startswith(prefix) for prefix in args.only)]
+    total = sum(f["size"] for f in files)
+    log(f"  {len(files)} 个文件，共 {total / 1024 ** 2:.0f} MB")
+
+    def done(entry, target: Path):
+        if not target.is_file() or target.stat().st_size != entry["size"]:
+            return False
+        oid = (entry.get("lfs") or {}).get("oid")
+        return oid is None or file_sha256(target) == oid
+
+    def get(entry):
+        target = dest / entry["path"]
+        if done(entry, target):
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        quoted = urllib.parse.quote(entry["path"])
+        errors = []
+        for endpoint in endpoints:
+            try:
+                resumable_download(f"{endpoint}/{args.repo}/resolve/{args.revision}/{quoted}", target)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{endpoint}: {exc}")
+                continue
+            if done(entry, target):
+                return
+            target.unlink(missing_ok=True)
+            errors.append(f"{endpoint}: 校验失败")
+        raise RuntimeError(f"{entry['path']} 下载失败（{'; '.join(errors)}）")
+
+    finished = 0
+    with ThreadPoolExecutor(args.workers) as pool:
+        jobs = [pool.submit(get, f) for f in files]
+        for job in as_completed(jobs):
+            job.result()
+            finished += 1
+            if finished % 200 == 0 or finished == len(files):
+                log(f"  {finished}/{len(files)}")
+    if not args.only:
+        marker.write_text(args.revision, encoding="utf-8")
+    log("  全部文件校验通过")
 
 
 MALE_SAMPLE_SPEAKER = "SSB0710"     # AISHELL-3, adult northern male: stand-in for "your voice"
@@ -366,6 +459,14 @@ def main():
     p.add_argument("--pkg", action="append", required=True, help="name==version, e.g. torch==2.8.0+cu126")
     p.add_argument("--dest", required=True)
     p.set_defaults(fn=fetch_wheels)
+    p = sub.add_parser("fetch-hf-repo")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--revision", required=True)
+    p.add_argument("--dest", required=True)
+    p.add_argument("--endpoint", default=os.environ.get("HF_ENDPOINT", HF_ENDPOINTS[0]))
+    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--only", nargs="*", default=[], help="只下载这些路径前缀（调试用）")
+    p.set_defaults(fn=fetch_hf_repo)
     p = sub.add_parser("compare")
     p.add_argument("--runtime", required=True)
     p.add_argument("--worker", required=True)
