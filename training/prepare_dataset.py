@@ -22,6 +22,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -66,6 +67,9 @@ def list_folder(endpoint, path):
         url = link.split(";")[0].strip("<> ") if 'rel="next"' in link else None
         if url and url.startswith("/"):
             url = endpoint + url
+        elif url:
+            # hf-mirror 的分页 Link 头指向 huggingface.co（国内常连不上），改回当前 endpoint
+            url = re.sub(r"^https?://[^/]+", endpoint, url)
     return files
 
 

@@ -378,6 +378,8 @@ def male_sample(dest: Path, endpoint):
         entries += [x for x in json.loads(body) if x.get("type") == "file"]
         link = headers.get("Link", "")
         url = link.split(";")[0].strip("<> ") if 'rel="next"' in link else None
+        if url:
+            url = re.sub(r"^https?://[^/]+", endpoint, url) if url.startswith("http") else endpoint + url
     longest = sorted(entries, key=lambda x: -x.get("size", 0))[:3]
     parts = []
     for entry in longest:
