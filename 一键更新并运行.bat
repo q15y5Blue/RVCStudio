@@ -1,5 +1,5 @@
-﻿@echo off
-chcp 65001 >nul
+@chcp 65001 >nul
+@echo off
 cd /d "%~dp0"
 echo ============================================================
 echo   RVCStudio  从 GitHub 拉取最新代码 - 重新打包 - 部署运行

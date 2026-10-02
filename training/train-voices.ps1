@@ -244,6 +244,8 @@ if ($Engines -contains "beatrice") {
     Run $py @($helpers, "fetch-hf-repo", "--repo", "fierce-cats/beatrice-trainer",
               "--revision", "f34836de014b86956096878aecb8d3b17feaaa0b", "--dest", $trainer,
               "--endpoint", $HfEndpoint) "下载 beatrice-trainer 2.0.0-rc.0（2021 个文件，约 460 MB）"
+    # 训练器向上查找 .git 目录来定位自己的根目录（它假定是 git clone 下来的），逐文件下载没有 .git
+    New-Item -ItemType Directory -Force -Path (Join-Path $trainer ".git") | Out-Null
     if ($pascal) { $amp = 0 } else { $amp = 1 }
     foreach ($voice in $voices) {
         Step "训练 Beatrice：$voice（$BeatriceSteps 步，batch $beatriceBatch）"
