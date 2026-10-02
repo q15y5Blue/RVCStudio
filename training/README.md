@@ -46,6 +46,7 @@
 ```
 
 下载默认走 hf-mirror.com（国内较快），失败时自动改用 huggingface.co；Python 依赖默认用清华镜像（`-PipIndex` 可改）。
+PyTorch 安装包（2.6～2.9 GB）默认直接从 download.pytorch.org 断点续传下载；想用镜像可加 `-TorchMirror https://mirrors.aliyun.com/pytorch-wheels`。
 
 ## 为什么是 SSB0565
 

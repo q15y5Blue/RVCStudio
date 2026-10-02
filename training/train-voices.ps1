@@ -37,7 +37,8 @@ param(
     [string]$TestAudio       = "",
     [string]$HfEndpoint      = "https://hf-mirror.com",
     [string]$PipIndex        = "https://pypi.tuna.tsinghua.edu.cn/simple",
-    [string]$TorchMirror     = "https://mirrors.aliyun.com/pytorch-wheels",
+    # PyTorch 安装包默认直接从官方源下载（实测比阿里云镜像快）；填镜像地址则先试镜像
+    [string]$TorchMirror     = "",
     [switch]$Yes,
     [switch]$NoConfigure,
     [switch]$CompareOnly,
@@ -81,7 +82,7 @@ function Succeeds($exe, [string[]]$argv) {
     try { & $exe @argv *> $null; return ($LASTEXITCODE -eq 0) } catch { return $false } finally { $ErrorActionPreference = $saved }
 }
 # PyTorch 轮子有 2.6～2.9 GB：pip 不能断点续传，网络一卡就从头再来。
-# 先由 train_helpers 断点续传下载（先国内镜像，再官方源）并按 pytorch.org 公布的 SHA-256 校验，再让 pip 装本地文件。
+# 先由 train_helpers 断点续传下载（默认官方源；-TorchMirror 指定镜像时先试镜像）并按 pytorch.org 公布的 SHA-256 校验，再让 pip 装本地文件。
 function FetchTorch($version) {
     $wheelDir = Join-Path $WorkDir "wheels"
     $argv = @($helpers, "fetch-wheels", "--index", "https://download.pytorch.org/whl/$cudaTag",
